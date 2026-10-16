@@ -2,6 +2,8 @@
 
 从本地 Codex 日志统计 token 和 API 等值费用，按邮箱上报到接收服务，在网页查看成员、设备、每日和模型分布。当前部署地址：[usage.wenspock.site](https://usage.wenspock.site)。看板需要管理员密钥，上报使用各邮箱独立的上传令牌，两者均与 OpenAI 登录凭据分开。
 
+同事首次使用请看 [安装与每周一上报指南](docs/colleague-guide.md)。仓库内的自包含 skill 位于 [skills/codex-usage](skills/codex-usage/SKILL.md)，可通过 `python scripts/manage_skill.py install` 安装；默认提示仅在本地统计，上传需要明确授权。
+
 ## 组成
 
 - `collector.py`：读取单个 Codex 日志根中的 `sessions`、`archived_sessions`，生成聚合报告和可选的请求 hash 事件包。详细口径见 [采集器说明](README-collector.md)。
@@ -44,5 +46,15 @@ python -m unittest discover -v
 `last7` 为截至执行时刻连续七天；`last-week` 为北京时间上个自然周。所有查询区间左闭右开。日志仅覆盖已读取并上报的本地记录，其他机器、云端、已删除历史及缺少稳定请求 ID 的记录可能不在统计中。
 
 ## 仓库边界
+
+维护者修改根目录的 collector、client、configure 等共享脚本或价格文件后，将受管理文件同步进分发包并检查一致性：
+
+```sh
+python scripts/manage_skill.py sync
+python scripts/manage_skill.py sync --check
+python -m unittest discover -v
+```
+
+`skills/codex-usage/scripts/` 是分发副本，不应单独修改造成与根源码分叉。成员更新仓库后运行 `python scripts/manage_skill.py install`，安装器保留私人状态和设备 ID；替换文件的备份路径在其 JSON `backup` 字段中，位于仓库 `.local/skill-install-backups/`。
 
 源码、测试和部署模板可以提交；`.local/`、`reports/`、数据库、个人连接配置、上传令牌、管理员密钥、OpenAI 凭据及 TLS 私钥不得提交。测试中的邮箱和请求数据为合成样例。当前版本的实际部署状态与限制以 [部署说明](README-deploy.md) 为准。

@@ -11,3 +11,6 @@ __pycache__/
 *.pem
 *.key
 .venv/
+remote.json
+upload-token.json
+upload-token-*.json

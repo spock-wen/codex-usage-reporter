@@ -1,0 +1,24 @@
+{
+  "currency": "USD",
+  "basis": "standard_api_equivalent",
+  "verified_at": "2026-10-16",
+  "source": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+  "notes": [
+    "按核验日公开 Standard API 价格估算，不是订阅实际账单，不换算订阅周额度。",
+    "单位为美元/百万 token。input_tokens 包含缓存读写，普通输入计费须扣除缓存部分。",
+    "单次输入大于 272000 token 时，整次请求输入及缓存价格乘2，输出乘1.5。",
+    "默认 Standard 速度；日志无法核实的 Fast/Ultrafast、工具调用、语音等费用不包含。",
+    "历史用量统一按本价格快照重估，不代表历史当日价格。未列出的模型标记未定价，禁止按零价处理。"
+  ],
+  "models": {
+    "gpt-6.1-sol": {
+      "input": 2.0,
+      "cached_input": 0.1,
+      "cache_write": 2.5,
+      "output": 10.0,
+      "long_context_threshold": 272000,
+      "long_input_multiplier": 2.0,
+      "long_output_multiplier": 1.5
+    }
+  }
+}
