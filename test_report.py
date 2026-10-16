@@ -1,0 +1,93 @@
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest import mock
+from urllib.error import HTTPError
+
+import report
+import collector
+
+
+class ReportTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.codex = self.root / "codex"
+        self.state = self.codex / "codex-usage"
+        self.state.mkdir(parents=True)
+        self.token = "PRIVATE-UPLOAD-TOKEN-LONG-ENOUGH-123"
+        (self.state / "upload.txt").write_text(self.token, encoding="utf-8")
+        self.config = self.state / "remote.json"
+        self.config.write_text(json.dumps({"url": "https://example.test/usage", "token_file": "upload.txt", "email": "worker@example.test"}), encoding="utf-8")
+        folder = self.codex / "sessions"
+        folder.mkdir()
+        rows = [{"type": "session_meta", "payload": {"id": "PRIVATE-THREAD"}},
+                {"type": "turn_context", "payload": {"model": "fixture-model", "turn_id": "t1"}},
+                {"type": "token_usage_record", "timestamp": "2026-10-08T00:00:00Z", "payload": {"response_id": "PRIVATE-OLD", "turn_id": "t1", "usage": {"input_tokens": 1, "output_tokens": 1}}},
+                {"type": "token_usage_record", "timestamp": "2026-10-12T01:00:00Z", "payload": {"response_id": "PRIVATE-RESPONSE", "turn_id": "t1", "usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10}}}]
+        (folder / "fixture.jsonl").write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+        self.prices = self.root / "prices.json"
+        self.prices.write_text(json.dumps({"models": {"fixture-model": {"input": 2, "cached_input": .1, "output": 10}}}), encoding="utf-8")
+        self.args = dict(now="2026-10-16T17:38:34+08:00", codex_home=self.codex,
+                         config=self.config, prices=self.prices, output_dir=self.root / "reports")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_one_scan_writes_safe_files_and_uploads_same_batch(self):
+        ack = {"ok": True, "batch_id": "a" * 64, "received": 1, "new": 1, "duplicates": 0,
+               "conflicts": 0, "rejected": 0, "quarantined": 0}
+        with mock.patch("report.collector.collect", wraps=collector.collect) as scan, mock.patch("report.client.upload_with_retries", return_value=(ack, 1)) as send:
+            result = report.run_report(**self.args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "uploaded")
+        self.assertEqual(scan.call_count, 1)
+        self.assertTrue(scan.call_args.kwargs["include_events"])
+        self.assertEqual(result["totals"]["total_tokens"], 110)
+        package = json.loads(Path(result["events_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(send.call_args.args[2], package)
+        self.assertEqual(send.call_args.args[1], self.token)
+        self.assertEqual(result["configured_email_masked"], "w***@example.test")
+        combined = json.dumps(result) + Path(result["report_path"]).read_text(encoding="utf-8") + json.dumps(package)
+        for secret in (self.token, "worker@example.test", "PRIVATE-THREAD", "PRIVATE-RESPONSE"):
+            self.assertNotIn(secret, combined)
+        self.assertIn("do not establish ownership", combined)
+
+    def test_local_only_never_loads_remote_credentials(self):
+        with mock.patch("report.client.resolve_remote", side_effect=AssertionError("must not read token")), mock.patch("report.client.upload_with_retries", side_effect=AssertionError("must not upload")):
+            result = report.run_report(**self.args, no_upload=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "local_only")
+        self.assertIsNone(result["configured_email_masked"])
+
+    def test_missing_config_stops_before_collect_and_does_not_log_secret(self):
+        args = {**self.args, "config": self.root / "missing.json"}
+        with mock.patch("report.collector.collect", side_effect=AssertionError("must not scan")):
+            result = report.run_report(**args)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "configuration_required")
+        self.assertNotIn(self.token, json.dumps(result))
+
+    def test_upload_failure_preserves_same_events_for_retry(self):
+        error = HTTPError("https://example.test", 401, "PRIVATE-NETWORK-ERROR", {}, None)
+        with mock.patch("report.client.upload_with_retries", side_effect=error):
+            result = report.run_report(**self.args)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["http_status"], 401)
+        self.assertTrue(Path(result["report_path"]).is_file())
+        self.assertTrue(Path(result["events_path"]).is_file())
+        self.assertNotIn("PRIVATE-NETWORK-ERROR", json.dumps(result))
+
+    def test_report_forwards_optional_config_pin(self):
+        config = json.loads(self.config.read_text(encoding="utf-8"))
+        config["connect_ip"] = "203.0.113.65"
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+        with mock.patch("report.client.upload_with_retries", return_value=({"ok": True}, 1)) as send:
+            result = report.run_report(**self.args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(send.call_args.kwargs["connect_ip"], "203.0.113.65")
+
+
+if __name__ == "__main__":
+    unittest.main()

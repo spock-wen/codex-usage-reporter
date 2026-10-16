@@ -1,0 +1,6 @@
+server.py
+collector.py
+prices.json
+web/index.html
+web/app.js
+web/style.css
