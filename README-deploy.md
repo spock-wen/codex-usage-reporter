@@ -4,7 +4,9 @@
 
 公网地址为 `https://usage.wenspock.site`，DNS A 为 DNS-only，后端由独立 systemd unit 开机启动。证书有效至 2027-01-14，使用现有 Certbot timer 续期。已验证服务重启后的数据持久化，没有重启整台共享服务器。
 
-本机私人配置为 `~/.codex/codex-usage/remote.json`，令牌单独存于同目录 `upload-token.json`；管理员密钥副本位于项目 `.local/remote-admin.json`，不要分发给成员。安装的 skill 用 `scripts/report.py run --period last7 --output-dir <报告目录>` 完成一次扫描和有界上报，上周自然周使用 `last-week`。重传已保存事件包用 `scripts/client.py --events <events.json>`。
+成员使用 `python scripts/manage_skill.py install --enroll` 自动读取本机 Codex 登录邮箱接入，无需管理员手签令牌或邮箱验证码；也可单独执行安装后的 scripts/enrollment.py。首次上报缺配置时同样自动接入。私人配置、设备标识、注册记录和上传凭据保存在 CODEX_HOME/codex-usage，未设置时为 ~/.codex/codex-usage；管理员密钥不要分发给成员。每周一显式运行 scripts/report.py run --period last-week，上报失败重传已保存事件包。
+
+接入身份为“内部自报 · 邮箱未验证”，不是可信 SSO。匿名 POST /api/enroll 只用于取得本设备上传凭据，团队统计/CSV/成员查询仍需管理员鉴权。独立凭据表兼容旧数据库和上传令牌，不轮换其他设备。注册使用持久管理员密钥派生独立用途的凭据，只存注册秘密和令牌的 hash；更新部署保留既有 admin_key，更换该密钥会影响同一注册记录的凭据重建。
 
 2026-10-16 补充验收：此前默认域名连接关闭的根因是本机 Clash 的 `DOMAIN-KEYWORD,usage,REJECT` 广告规则。已在当前订阅的持久规则中仅 prepend `DOMAIN,usage.wenspock.site,DIRECT`，保留其他拦截，重载后普通域名 GET 200、内置浏览器打开并登录成功。私人 remote.json 已移除 connect_ip，原生 skill CLI 使用普通域名重传仍 new=0、duplicates=15728。证据见 `reports/normal-domain-access-validation.json` 及 `reports/remote-dashboard-access-verified.png`。
 
@@ -53,6 +55,6 @@ Nginx 请求体上限 17 MiB，后端实际限制 16 MiB/每批 50000 事件；�
 
 操作者应在主机上实际完成 `systemd-analyze verify`、`nginx -t`、服务 active/enabled、loopback 监听以及外部 HTTPS 证书验证。验证匿名访问 `/api/summary` 返回 401、上传 token 不能读取团队统计；管理员通过本地受控方式取得私有配置中的 key，不粘贴到共享日志。
 
-在 HTTPS 域名创建真实邮箱的上传 token，并让本机 skill 重新采集后上报同一包两次：第二次 ACK 应 `new=0`、重复条数增加而累计 token 不变。第二设备的独立请求应累加，克隆同一请求不得累加；跨邮箱或相同请求内容矛盾须隔离。公网服务器不接收 OAuth 凭据；邮箱归属是管理员绑定的上传归属，不能据当前登录账户推断历史日志的真实归属。
+在 HTTPS 域名通过本机正常登录邮箱自动接入，验证相同注册记录重试取得相同凭据、禁用邮箱不能重新启用、旧令牌仍可用。重新采集后上报同一包两次：第二次 ACK 应 new=0、重复条数增加而累计 token 不变。第二设备各自注册，独立请求应累加，克隆同一请求不得累加；跨邮箱或相同请求内容矛盾须隔离。服务不接收 OAuth 凭据；邮箱只是未验证的自报归属，不能据当前账户推断历史日志的真实归属。
 
 部署文件准备、配置检查与本地测试不等同于公网部署验收；只有操作者取得上述远程运行证据后才可声称上线。

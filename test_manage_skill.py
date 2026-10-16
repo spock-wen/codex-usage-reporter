@@ -6,11 +6,26 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from scripts import manage_skill
 
 
 class ManageSkillTests(unittest.TestCase):
+    def test_explicit_enroll_uses_installed_script_and_separate_private_config(self):
+        dest = self.home / "installed-skill"
+        config = self.home / "independent-state" / "remote.json"
+        safe = {"ok": True, "status": "enrolled", "email_masked": "w***@example.test", "identity_assurance": "self_reported"}
+        process = mock.Mock(stdout=json.dumps({**safe, "upload_token": "PRIVATE-MUST-NOT-PRINT"}))
+        with mock.patch("scripts.manage_skill.subprocess.run", return_value=process) as run:
+            result = manage_skill.enroll_installed(dest, codex_home=self.home / "login", config=config)
+        command = run.call_args.args[0]
+        self.assertEqual(Path(command[1]), dest / "scripts" / "enrollment.py")
+        self.assertIn(str(config), command)
+        self.assertFalse(run.call_args.kwargs["shell"])
+        self.assertNotIn("PRIVATE-MUST-NOT-PRINT", json.dumps(result))
+        self.assertEqual(result, safe)
+
     def test_actual_repository_bundle_matches_canonical_sources(self):
         actual_root = Path(__file__).resolve().parent
         self.assertTrue(manage_skill.sync_bundle(actual_root, check=True)["ok"],

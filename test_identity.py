@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import os
 import sys
 import tempfile
 import time
@@ -70,6 +71,22 @@ else:
 
 
 class IdentityTests(unittest.TestCase):
+    def test_native_vendor_binary_is_discovered_without_hardcoded_version(self):
+        with tempfile.TemporaryDirectory() as folder:
+            vendor = Path(folder) / "OpenAI" / "Codex" / "bin"
+            old, new = vendor / "version-old" / "codex.exe", vendor / "version-new" / "codex.exe"
+            for path in (old, new):
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"fixture-not-executed")
+            os.utime(old, (1000, 1000)); os.utime(new, (2000, 2000))
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": folder}), mock.patch("identity.shutil.which", return_value=None):
+                found, error = identity.resolve_executable()
+                self.assertIsNone(error)
+                self.assertEqual(Path(found), new.resolve())
+                explicit, error = identity.resolve_executable(old)
+                self.assertIsNone(error)
+                self.assertEqual(Path(explicit), old.resolve())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

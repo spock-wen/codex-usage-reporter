@@ -25,6 +25,16 @@ def timestamp():
 
 def resolve_executable(executable=None):
     candidate = executable or shutil.which("codex.exe") or shutil.which("codex")
+    if not executable and (not candidate or Path(candidate).suffix.lower() in (".cmd", ".bat", ".ps1")):
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            vendor = Path(local_app_data) / "OpenAI" / "Codex" / "bin"
+            try:
+                native = [p for p in vendor.glob("*/codex.exe") if p.is_file() and not p.is_symlink()]
+                if native:
+                    candidate = max(native, key=lambda p: p.stat().st_mtime_ns)
+            except OSError:
+                pass
     if not candidate:
         return None, "executable_not_found"
     found = shutil.which(str(candidate)) or (str(Path(candidate).resolve()) if Path(candidate).is_file() else None)

@@ -4,16 +4,22 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Codex 用量看板 · 本地团队统计</title>
+  <title>Codex 用量看板 · 内部自报</title>
   <link rel="stylesheet" href="./style.css">
   <script src="./app.js" defer></script>
 </head>
 <body>
   <div class="app-shell">
     <header class="page-header">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">C<span>·</span></span><div><p class="eyebrow">WORKSPACE / USAGE</p><h1>Codex 用量看板</h1><p class="subtitle">本地团队统计</p></div></div>
-      <div class="service-pill"><span class="status-dot" aria-hidden="true"></span>本地服务<span class="pill-divider">/</span><span id="connection-label">尚未连接</span></div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true">C<span>·</span></span><div><p class="eyebrow">WORKSPACE / USAGE</p><h1>Codex 用量看板</h1><p class="subtitle">内部自报 · 邮箱未验证</p></div></div>
+      <div class="service-pill"><span class="status-dot" aria-hidden="true"></span>团队服务<span class="pill-divider">/</span><span id="connection-label">尚未连接</span></div>
     </header>
+
+    <section class="panel enrollment-panel" aria-labelledby="enrollment-title">
+      <div class="panel-heading"><div><p class="eyebrow">SELF REPORT</p><h2 id="enrollment-title">自动接入团队周报</h2></div><span class="subtle-label">内部自报 · 邮箱未验证</span></div>
+      <p class="panel-footnote">安装 codex-usage skill 后，在本人机器明确要求“读取本机 Codex 登录邮箱，自动接入并上报上周用量”。客户端自动取得本设备上传凭据，无需管理员预登记或邮件验证码；每台机器保留自己的设备标识。</p>
+      <p class="panel-footnote">邮箱仅为内部自报标签，未验证邮箱所有权，也不能证明历史日志归属。下方管理员登录仅用于查看团队汇总。</p>
+    </section>
 
     <section class="access-panel" aria-labelledby="access-title">
       <div><h2 id="access-title">连接你的统计空间</h2><p>输入管理员密钥，查看团队汇总与上报记录。</p></div>
@@ -43,13 +49,13 @@
         <article class="panel model-panel"><div class="panel-heading"><div><p class="eyebrow">BREAKDOWN</p><h2>模型分布</h2></div><span class="subtle-label">按 Token</span></div><div id="model-list" class="model-list"><p class="empty-message">暂无模型记录</p></div><p id="pricing-note" class="panel-footnote">估算费用不代表实际订阅扣费。</p></article>
       </section>
 
-      <section class="panel users-panel" aria-labelledby="users-title"><div class="panel-heading"><div><p class="eyebrow">TEAM</p><h2 id="users-title">按邮箱统计 <span id="user-count" class="count-badge">—</span></h2></div><div class="users-actions"><label class="sr-only" for="user-search">搜索邮箱列表</label><input id="user-search" type="search" placeholder="搜索邮箱…" autocomplete="off"><button class="button secondary small" id="add-email-button" type="button" disabled>＋ 添加邮箱</button></div></div><div class="table-scroll"><table><thead><tr><th scope="col">邮箱</th><th scope="col" class="numeric">设备</th><th scope="col" class="numeric">有效请求</th><th scope="col" class="numeric">Token</th><th scope="col" class="numeric">API 等值 / USD</th><th scope="col">最近同步</th></tr></thead><tbody id="users-body"><tr><td colspan="6" class="empty-cell">连接后可查看邮箱用量，或添加允许上报的邮箱。</td></tr></tbody></table></div><p class="panel-footnote table-footnote">点击邮箱可筛选整个看板。同一响应的重复上报只计算一次。</p></section>
+      <section class="panel users-panel" aria-labelledby="users-title"><div class="panel-heading"><div><p class="eyebrow">TEAM</p><h2 id="users-title">按邮箱统计 <span id="user-count" class="count-badge">—</span></h2></div><div class="users-actions"><label class="sr-only" for="user-search">搜索邮箱列表</label><input id="user-search" type="search" placeholder="搜索邮箱…" autocomplete="off"><button class="button secondary small" id="add-email-button" type="button" disabled>手动兼容接入</button></div></div><div class="table-scroll"><table><thead><tr><th scope="col">邮箱</th><th scope="col" class="numeric">设备</th><th scope="col" class="numeric">有效请求</th><th scope="col" class="numeric">Token</th><th scope="col" class="numeric">API 等值 / USD</th><th scope="col">最近同步</th></tr></thead><tbody id="users-body"><tr><td colspan="6" class="empty-cell">连接后可查看邮箱用量。成员可通过本机 skill 自动接入并上报。</td></tr></tbody></table></div><p class="panel-footnote table-footnote">内部自报 · 邮箱未验证。点击邮箱可筛选整个看板，同一响应的重复上报只计算一次。</p></section>
 
       <section class="panel batches-panel"><div class="panel-heading"><div><p class="eyebrow">SYNC LOG</p><h2>最近上报</h2></div><span class="subtle-label">新增 · 重复 · 冲突</span></div><div id="batch-list" class="batch-list"><p class="empty-message compact">暂无上报记录</p></div></section>
       <footer class="page-footer"><p><span class="footer-mark" aria-hidden="true">C·</span> Codex Usage <span class="footer-divider">/</span> 本地日志，统一去重。</p><p id="last-updated">尚未同步</p></footer>
     </main>
   </div>
 
-  <dialog id="add-email-dialog" aria-labelledby="add-email-title"><form id="add-email-form"><div class="dialog-heading"><div><p class="eyebrow">UPLOAD ACCESS</p><h2 id="add-email-title">添加上报邮箱</h2></div><button class="icon-button" type="button" id="close-email-dialog" aria-label="关闭">×</button></div><p class="dialog-description">为这个邮箱生成上传令牌，用于提交本地用量记录。</p><label class="field-caption" for="new-email">Codex 登录邮箱</label><input id="new-email" type="email" autocomplete="off" placeholder="name@example.com" required><p id="email-form-status" class="form-status" role="status"></p><button class="button primary full-width" id="create-token-button" type="submit">生成上传令牌</button></form><section id="token-result" class="token-result" hidden><p class="token-warning">仅在此显示一次，请妥善保存。</p><p class="field-caption">上传令牌 · 仅用于本统计服务</p><textarea id="upload-token" readonly rows="3" aria-label="新生成的上传令牌"></textarea><button class="button secondary full-width" id="copy-token-button" type="button">复制上传令牌</button><p class="field-help">这不是 OpenAI 登录凭据，也不能用于登录 Codex。</p></section></dialog>
+  <dialog id="add-email-dialog" aria-labelledby="add-email-title"><form id="add-email-form"><div class="dialog-heading"><div><p class="eyebrow">UPLOAD ACCESS</p><h2 id="add-email-title">手动兼容接入</h2></div><button class="icon-button" type="button" id="close-email-dialog" aria-label="关闭">×</button></div><p class="dialog-description">仅供旧版客户端兼容：手动生成个人上传令牌。新版 skill 可自动接入，无需管理员预登记。</p><label class="field-caption" for="new-email">上报邮箱（未验证）</label><input id="new-email" type="email" autocomplete="off" placeholder="name@example.com" required><p id="email-form-status" class="form-status" role="status"></p><button class="button primary full-width" id="create-token-button" type="submit">生成上传令牌</button></form><section id="token-result" class="token-result" hidden><p class="token-warning">仅在此显示一次，请妥善保存。</p><p class="field-caption">上传令牌 · 仅用于本统计服务</p><textarea id="upload-token" readonly rows="3" aria-label="新生成的上传令牌"></textarea><button class="button secondary full-width" id="copy-token-button" type="button">复制上传令牌</button><p class="field-help">这不是 OpenAI 登录凭据，也不能用于登录 Codex。</p></section></dialog>
 </body>
 </html>

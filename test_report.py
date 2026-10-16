@@ -55,7 +55,7 @@ class ReportTests(unittest.TestCase):
         self.assertIn("do not establish ownership", combined)
 
     def test_local_only_never_loads_remote_credentials(self):
-        with mock.patch("report.client.resolve_remote", side_effect=AssertionError("must not read token")), mock.patch("report.client.upload_with_retries", side_effect=AssertionError("must not upload")):
+        with mock.patch("report.enrollment.ensure_remote", side_effect=AssertionError("must not read account/config or enroll")), mock.patch("report.client.resolve_remote", side_effect=AssertionError("must not read token")), mock.patch("report.client.upload_with_retries", side_effect=AssertionError("must not upload")):
             result = report.run_report(**self.args, no_upload=True)
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "local_only")
@@ -63,10 +63,10 @@ class ReportTests(unittest.TestCase):
 
     def test_missing_config_stops_before_collect_and_does_not_log_secret(self):
         args = {**self.args, "config": self.root / "missing.json"}
-        with mock.patch("report.collector.collect", side_effect=AssertionError("must not scan")):
+        with mock.patch("report.enrollment.identity.read_account", return_value={"status": "no_account"}), mock.patch("report.collector.collect", side_effect=AssertionError("must not scan")):
             result = report.run_report(**args)
         self.assertFalse(result["ok"])
-        self.assertEqual(result["status"], "configuration_required")
+        self.assertEqual(result["status"], "enrollment_stopped")
         self.assertNotIn(self.token, json.dumps(result))
 
     def test_upload_failure_preserves_same_events_for_retry(self):

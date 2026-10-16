@@ -6,11 +6,20 @@
 
 在此目录执行 `powershell -NoProfile -File .\run-local.ps1`，打开 `http://127.0.0.1:8765/`。脚本优先采用本机 Codex 捆绑 Python，亦可通过 `-PythonExecutable` 指定解释器。配置保存在 `.local/server-config.json`；使用其中的 `admin_key` 登录本地网页，配置不要分享给上报用户。
 
-管理员在网页登记邮箱，取得该邮箱专属的上报令牌。仅需要邮箱，不收集工号、姓名、部门。上报令牌与 OpenAI 登录凭据完全独立，服务器只保存令牌哈希。邮箱是服务端登记的上报归属，并不证明历史日志确实属于当前 Codex 登录账户。
+新版主流程为自动接入：客户端读取本机 Codex 登录邮箱，注册本设备上传凭据，无需管理员预登记或邮件验证码。界面明确标记“内部自报 · 邮箱未验证”，这不是可信 SSO 身份，也不能证明历史日志归属。看板查看和团队 API 仍需管理员密钥。上报不收集工号、姓名或部门，不使用 OpenAI 登录令牌。
 
 ## 采集和上报
 
-使用 `collector.py collect --period last7 --output reports/summary.json --events-output reports/events.json` 生成本地包。`last-week` 为北京时间上个自然周；也可指定 `--start`、`--end`。
+本机服务启动后，客户端明确指定本地地址接入，再上报：
+
+```powershell
+python enrollment.py --url http://127.0.0.1:8765
+python report.py run --period last-week --output-dir reports/local-weekly
+```
+
+需要纯本地统计用 `python report.py run --period last7 --no-upload --output-dir reports/local`，不联网、不查询登录身份。last-week 为北京时间上个自然周；历史补报可用 collector 的 --start/--end。远端同事安装见 [指南](docs/colleague-guide.md)。
+
+以下仅为旧版手动接入兼容：管理员在网页“手动兼容接入”登记邮箱并取得个人令牌，再用 `collector.py collect --period last7 --output reports/summary.json --events-output reports/events.json` 生成本地包。
 
 将网页生成的上报令牌存入本地文件，例如 `.local/upload-token.json`，内容为 `{"upload_token":"此处替换为专属令牌"}`。然后执行：
 
@@ -31,7 +40,8 @@ python client.py --url http://127.0.0.1:8765 --events reports/events.json --toke
 ## 接口
 
 - `GET /health`：公开健康检查。
-- `POST /api/users`：管理员 Bearer 令牌，JSON 为 `{"email":"user@example.com"}`；201 只返回一次上传令牌，已有邮箱返回 409，不改变旧令牌。
+- `POST /api/enroll`：匿名内部自报注册，严格 JSON 为 email/device_id/registration_key；同一设备注册记录可重试，响应身份级别为 self_reported。公开请求体上限 8 KiB；不验证邮箱所有权。
+- `POST /api/users`：旧手动接入兼容，管理员 Bearer 令牌，JSON 为 `{"email":"user@example.com"}`；201 只返回一次上传令牌，已有邮箱返回 409，不改变旧令牌。
 - `GET /api/users`：管理员查询登记邮箱和设备状态，不返回上传令牌。
 - `POST /api/events`：邮箱专属上传 Bearer 令牌，JSON 为 `{"device_id":"已有设备标识","package":完整采集包}`。可选 email 必须与服务端令牌所属邮箱一致。
 - `GET /api/summary?start=2026-10-09&end=2026-10-17`：管理员查询；可追加 email 筛选，也可使用 `week=周一日期`。
@@ -39,7 +49,7 @@ python client.py --url http://127.0.0.1:8765 --events reports/events.json --toke
 
 服务端支持最多 16 MiB 请求体和每包 50,000 条事件。鉴权失败为 401，角色/邮箱越权为 403，非法包为 400，过大请求为 413。HTTP 200 的确认中包含新增、重复、冲突和拒绝数量；页面冲突数来自完整汇总，列表只展示最近部分。
 
-界面会标明本期未提交、历史同步、未定价和隔离冲突。首次生成的上传令牌应及时保存；当前版本没有管理员重发/轮换入口，网络中断导致创建响应丢失时也不能通过重复登记恢复令牌。该恢复能力需在后续多人部署前补齐。
+界面会标明本期未提交、历史同步、未定价和隔离冲突。自动注册使用本机持久注册记录重试，不轮换其他机器或旧版凭据；禁用邮箱不能通过再次注册恢复。旧手动令牌仍只显示一次，没有自助重发入口，重复手动登记不会恢复令牌。
 
 ## 验证
 

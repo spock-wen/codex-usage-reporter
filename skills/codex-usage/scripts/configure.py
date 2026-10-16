@@ -71,8 +71,8 @@ def configure(email, token_file, url=DEFAULT_URL, codex_home=None, replace=False
         lock.unlink()
 
 
-def _configure_state(email, token, base, state, replace):
-    config_path, managed_token_path = state / "remote.json", state / "upload-token.json"
+def _configure_state(email, token, base, state, replace, config_path=None, extra_fields=None, expected_existing=None):
+    config_path, managed_token_path = Path(config_path) if config_path else state / "remote.json", state / "upload-token.json"
     if config_path.is_symlink() or managed_token_path.is_symlink():
         raise ValueError("configuration_symlink_not_allowed")
     old = None
@@ -83,10 +83,19 @@ def _configure_state(email, token, base, state, replace):
             old_token_path = old.get("token_file")
             if old_token_path and Path(old_token_path).resolve().name.casefold() == "auth.json":
                 raise ValueError("openai_auth_file_not_allowed")
-            old_token = client.load_token(old_token_path) if old_token_path else None
+            try:
+                old_token = client.load_token(old_token_path) if old_token_path else None
+            except (ValueError, OSError):
+                old_token = None
             same = normalized_url(old.get("url", "")) == base and old.get("email", "").casefold() == email and old_token == token
+            if extra_fields and any(old.get(key) != value for key, value in extra_fields.items()):
+                same = False
         except (ValueError, OSError, TypeError):
             old = None
+        if expected_existing is not None:
+            actual_identity = (normalized_url(old.get("url", "")), old.get("email", "").casefold(), old.get("enrollment_mode")) if old else None
+            if actual_identity != expected_existing:
+                raise ValueError("configuration_changed_during_enrollment")
         if same:
             return {"ok": True, "status": "already_configured", "email_masked": mask_email(email),
                     "url": base, "config_path": str(config_path), "credentials_changed": False}
@@ -105,6 +114,8 @@ def _configure_state(email, token, base, state, replace):
             config["device_id"] = old["device_id"]
         if old.get("connect_ip") and normalized_url(old.get("url", "")) == base:
             config["connect_ip"] = old["connect_ip"]
+    if extra_fields:
+        config.update(extra_fields)
     # Device state is deliberately not created, replaced or removed here.
     atomic_private_json(target_token, {"upload_token": token})
     try:
@@ -115,6 +126,31 @@ def _configure_state(email, token, base, state, replace):
     return {"ok": True, "status": "configured", "email_masked": mask_email(email),
             "url": base, "config_path": str(config_path), "credentials_changed": True,
             "account_scope": "Reporting email only; no login or historical OpenAI-account attribution."}
+
+
+def save_enrolled_configuration(email, token, base, config_path, device, connect_ip=None, expected_existing=None):
+    """Internal validated enrollment save; never print a registration or upload key."""
+    if not isinstance(token, str) or not 24 <= len(token) <= 256 or any(c.isspace() for c in token):
+        raise ValueError("invalid_enrollment_token")
+    target = Path(config_path)
+    state = target.parent
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock = state / ".configure.lock"
+    try:
+        descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        raise ValueError("configuration_busy_retry_later") from None
+    os.close(descriptor)
+    try:
+        # No pre-existing config was observed: do not overwrite one that raced us.
+        if expected_existing is None and target.exists():
+            raise ValueError("configuration_changed_during_enrollment")
+        extra = {"device_id": device, "enrollment_mode": "self_reported", "identity_assurance": "self_reported"}
+        if connect_ip:
+            extra["connect_ip"] = client.validate_connect_ip(connect_ip)
+        return _configure_state(email, token, normalized_url(base), state, True, target, extra, expected_existing)
+    finally:
+        lock.unlink()
 
 
 def main(argv=None):

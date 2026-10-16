@@ -9,6 +9,7 @@ from urllib.error import HTTPError, URLError
 
 import client
 import collector
+import enrollment
 
 
 def masked_email(value):
@@ -21,15 +22,22 @@ def masked_email(value):
 
 
 def run_report(period="last7", now=None, output_dir=None, config=None, codex_home=None,
-               prices=None, no_upload=False):
+               prices=None, no_upload=False, codex_executable=None):
     result = {"ok": False, "status": "not_started", "ack": None, "attempts": 0}
     remote = None
     if not no_upload:
         try:
-            remote = client.resolve_remote(config_path=config, codex_home=codex_home)
+            remote = enrollment.ensure_remote(config_path=config, codex_home=codex_home,
+                                               codex_executable=codex_executable)
+        except enrollment.EnrollmentError as error:
+            return {**result, "status": "enrollment_stopped", "reason": str(error)}
+        except HTTPError as error:
+            return {**result, "status": "enrollment_failed", "reason": "http_error_registration_key_preserved", "http_status": error.code}
+        except (URLError, TimeoutError):
+            return {**result, "status": "enrollment_failed", "reason": "network_error_registration_key_preserved"}
         except (ValueError, OSError, TypeError):
             return {**result, "status": "configuration_required",
-                    "reason": "configure_remote_url_and_upload_token_file_no_automatic_login"}
+                    "reason": "automatic_enrollment_or_private_configuration_unavailable"}
     try:
         price_path = Path(prices) if prices else Path(__file__).with_name("prices.json")
         report, package = collector.collect(codex_home=codex_home, period=period, now=now,
@@ -75,11 +83,12 @@ def main(argv=None):
     cmd.add_argument("--output-dir", help="Report directory outside the installed skill; default current workspace/codex-usage-reports")
     cmd.add_argument("--config", help="Private remote.json; never stored in the skill bundle")
     cmd.add_argument("--codex-home")
+    cmd.add_argument("--codex-executable", help="Optional native binary for read-only current-account checks")
     cmd.add_argument("--prices")
     cmd.add_argument("--no-upload", action="store_true", help="Generate local files without reading remote config or upload token")
     args = parser.parse_args(argv)
     result = run_report(args.period, args.now, args.output_dir, args.config, args.codex_home,
-                        args.prices, args.no_upload)
+                        args.prices, args.no_upload, args.codex_executable)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["ok"] else 1
 

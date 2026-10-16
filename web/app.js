@@ -114,7 +114,7 @@
       $("last-updated").textContent = "更新于 " + dateTime(new Date().toISOString()) + " · 北京时间";
       const missingUsers = Array.isArray(data.quality?.missing_users) ? data.quality.missing_users.length : 0;
       const missingNote = missingUsers ? " " + count(missingUsers) + " 个邮箱本期未提交，不能将其视为已核实的零用量。" : "";
-      notice((data.totals.requests > 0 ? "已获取最新上报数据；重复响应已去重，冲突响应已隔离。" : "此区间尚无有效用量。添加邮箱后，可使用上传令牌提交本地记录。") + missingNote, "success");
+      notice((data.totals.requests > 0 ? "已获取最新上报数据；重复响应已去重，冲突响应已隔离。" : "此区间尚无有效用量。成员可使用本机 skill 自动接入并上报。") + missingNote, "success");
     } catch (error) {
       if (sequence !== requestSequence || error.name === "AbortError") return;
       clearData("本次读取失败，已清除旧结果");
@@ -163,7 +163,7 @@
     const users = allUsers();
     $("user-count").textContent = count(users.length);
     if (!users.length) {
-      const row = node("tr"); const cell = node("td", "empty-cell", "暂无匹配邮箱。可添加邮箱并提交本地用量记录。"); cell.colSpan = 6; row.append(cell); $("users-body").replaceChildren(row); return;
+      const row = node("tr"); const cell = node("td", "empty-cell", "暂无匹配邮箱。成员通过本机 skill 自动接入后提交用量记录。"); cell.colSpan = 6; row.append(cell); $("users-body").replaceChildren(row); return;
     }
     const rows = users.map((user) => {
       const row = node("tr"); const emailCell = node("td");
@@ -230,7 +230,7 @@
   }
   function renderBatches() {
     const batches = (Array.isArray(summary.batches) ? summary.batches : []).slice(0, 12);
-    if (!batches.length) { $("batch-list").replaceChildren(node("p", "empty-message compact", "暂无上报记录。新增邮箱后使用上传令牌提交第一份记录。")); return; }
+    if (!batches.length) { $("batch-list").replaceChildren(node("p", "empty-message compact", "暂无上报记录。成员可通过本机 skill 自动接入并提交第一份记录。")); return; }
     $("batch-list").replaceChildren(...batches.map((batch) => {
       const item = node("div", "batch-item"), identity = node("div");
       identity.append(node("p", "batch-email", batch.email || "未知邮箱"), node("p", "batch-device", "设备 " + String(batch.device_id || "未知")));

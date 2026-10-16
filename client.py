@@ -81,7 +81,7 @@ def load_remote_config(path=None, codex_home=None):
     if not isinstance(value, dict):
         raise ValueError("invalid_remote_config")
     config = {}
-    for field in ("url", "token_file", "device_id", "email", "connect_ip"):
+    for field in ("url", "token_file", "device_id", "email", "connect_ip", "enrollment_mode", "identity_assurance"):
         if field in value:
             if field == "connect_ip" and value[field] in (None, ""):
                 continue
@@ -117,7 +117,8 @@ def resolve_remote(url=None, token_file=None, device=None, state_dir=None, confi
         raise ValueError("invalid_device_id")
     return {"url": base, "token": token, "device_id": stable_device,
             "expected_email": config.get("email") if same_target else None,
-            "connect_ip": config.get("connect_ip") if same_target else None}
+            "connect_ip": config.get("connect_ip") if same_target else None,
+            "enrollment_mode": config.get("enrollment_mode") if same_target else None}
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -158,6 +159,8 @@ def device_id(state_dir):
 def load_token(path=None):
     token = os.environ.get("CODEX_USAGE_UPLOAD_TOKEN")
     if path:
+        if Path(path).resolve().name.casefold() == "auth.json":
+            raise ValueError("OpenAI auth.json is not an upload-token file")
         raw = Path(path).read_text(encoding="utf-8-sig").strip()
         if raw.startswith("{"):
             token = json.loads(raw).get("upload_token")
@@ -225,6 +228,12 @@ def upload_with_retries(base, token, package, device, timeout=15, max_attempts=3
     Each network worker also has a socket timeout. Daemon workers prevent DNS or
     platform network stalls from keeping the CLI alive after its bounded result.
     """
+    return perform_with_retries(lambda seconds: upload(base, token, package, device, seconds, connect_ip=connect_ip),
+                                timeout=timeout, max_attempts=max_attempts)
+
+
+def perform_with_retries(operation, timeout=15, max_attempts=3):
+    """Bound one fixed-payload network operation; never recollect or change identity."""
     if type(max_attempts) is not int or not 1 <= max_attempts <= 3:
         raise ValueError("invalid_retry_count")
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 15:
@@ -238,7 +247,7 @@ def upload_with_retries(base, token, package, device, timeout=15, max_attempts=3
         result = queue.Queue(maxsize=1)
         def network_worker(result_queue=result, seconds=min(timeout, remaining)):
             try:
-                result_queue.put((True, upload(base, token, package, device, seconds, connect_ip=connect_ip)))
+                result_queue.put((True, operation(seconds)))
             except Exception as error:
                 result_queue.put((False, error))
         threading.Thread(target=network_worker, name="codex-usage-upload", daemon=True).start()
@@ -265,6 +274,7 @@ def main(argv=None):
     parser.add_argument("--url", help="Explicit server URL; otherwise use private remote.json")
     parser.add_argument("--config", help="Private remote.json; defaults to CODEX_HOME/codex-usage/remote.json")
     parser.add_argument("--codex-home")
+    parser.add_argument("--codex-executable", help="Native Codex binary for read-only account detection when auto-enrollment is needed")
     parser.add_argument("--events", required=True)
     parser.add_argument("--token-file", help="Upload token text or JSON {upload_token: ...}; never an OpenAI token")
     parser.add_argument("--device-id")
@@ -278,7 +288,21 @@ def main(argv=None):
         if path.stat().st_size > MAX_PACKAGE_BYTES:
             raise ValueError("input package exceeds 16 MiB")
         package = json.loads(path.read_text(encoding="utf-8-sig"))
-        remote = resolve_remote(args.url, args.token_file, args.device_id, args.state_dir, args.config, args.codex_home)
+        if args.token_file or (args.url and os.environ.get("CODEX_USAGE_UPLOAD_TOKEN")):
+            remote = resolve_remote(args.url, args.token_file, args.device_id, args.state_dir, args.config, args.codex_home)
+        else:
+            import enrollment
+            try:
+                remote = enrollment.ensure_remote(config_path=args.config, codex_home=args.codex_home,
+                                                   codex_executable=args.codex_executable, url=args.url)
+            except enrollment.EnrollmentError as error:
+                print(json.dumps({"ok": False, "reason": str(error), "status": "enrollment_stopped"}))
+                return 1
+            selected_device = args.device_id or (device_id(args.state_dir) if args.state_dir else None)
+            if selected_device:
+                if remote.get("enrollment_mode") == "self_reported" and selected_device != remote["device_id"]:
+                    raise ValueError("auto_enrolled_device_cannot_be_overridden")
+                remote["device_id"] = selected_device
         result, attempts = upload_with_retries(remote["url"], remote["token"], package, remote["device_id"], args.timeout,
                                               connect_ip=remote["connect_ip"])
         result["attempts"] = attempts

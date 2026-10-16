@@ -6,10 +6,13 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from collector import TOKEN_FIELDS, parse_time
-from server import AlreadyExists, Invalid, Store, canonical_json, csv_safe, export_csv, query_period, validate_package
+from server import AlreadyExists, EnrollmentConflict, Invalid, Store, canonical_json, csv_safe, export_csv, make_server, query_period, validate_package
 
 ADMIN = 'synthetic-admin-key-at-least-24-characters'
 START = '2026-10-12T00:00:00+08:00'
@@ -63,6 +66,119 @@ class ServerStoreTests(unittest.TestCase):
         with self.assertRaises(AlreadyExists):
             self.store.create_user('person@example.com')
         self.assertEqual(self.store.authenticate(self.user['upload_token'])[0], 'uploader')
+
+    def enrollment(self, email='auto@example.com', device='automatic-pc', key='a' * 48):
+        return self.store.enroll({'email': email, 'device_id': device, 'registration_key': key})
+
+    def test_enrollment_repeat_reopen_and_normalized_mailbox(self):
+        first = self.enrollment(email=' Auto@Example.COM ')
+        second = self.enrollment()
+        self.assertEqual(first['email'], 'auto@example.com')
+        self.assertFalse(first['enrollment_repeated'])
+        self.assertTrue(second['enrollment_repeated'])
+        self.assertEqual(first['upload_token'], second['upload_token'])
+        self.assertEqual(first['identity_assurance'], 'self_reported')
+        self.store = Store(self.db, ADMIN, self.prices)
+        self.assertEqual(self.enrollment()['upload_token'], first['upload_token'])
+        self.assertEqual(self.store.authenticate(first['upload_token']), ('uploader', 'auto@example.com'))
+
+    def test_enrollment_multimachine_credentials_independent_and_usage_union(self):
+        one = self.enrollment(email='person@example.com', device='auto-one', key='b' * 48)
+        two = self.enrollment(email='person@example.com', device='auto-two', key='c' * 48)
+        self.assertNotEqual(one['upload_token'], two['upload_token'])
+        for credential in (one, two):
+            self.assertEqual(self.store.authenticate(credential['upload_token']), ('uploader', 'person@example.com'))
+        self.assertEqual(self.store.authenticate(self.user['upload_token']), ('uploader', 'person@example.com'))
+        self.ingest([event('shared-auto'), event('one-auto')], device='auto-one')
+        self.ingest([event('shared-auto'), event('two-auto')], device='auto-two')
+        self.assertEqual(self.summary()['totals']['requests'], 3)
+
+    def test_enrollment_registration_secret_cannot_move_email_or_device(self):
+        first = self.enrollment()
+        for overrides in ({'email': 'another@example.com'}, {'device': 'other-pc'}):
+            with self.subTest(overrides=overrides), self.assertRaises(EnrollmentConflict):
+                self.enrollment(**overrides)
+        self.assertEqual(self.enrollment()['upload_token'], first['upload_token'])
+        self.assertNotIn('another@example.com', {u['email'] for u in self.store.users()})
+
+    def test_disabled_mailbox_cannot_enroll_reactivate_or_authenticate(self):
+        first = self.enrollment(email='person@example.com')
+        with self.store.connect() as conn:
+            conn.execute('UPDATE users SET active=0 WHERE email=?', ('person@example.com',))
+        for key in ('a' * 48, 'd' * 48):
+            with self.assertRaises(PermissionError):
+                self.enrollment(email='person@example.com', key=key)
+        self.assertEqual(self.store.authenticate(first['upload_token']), (None, None))
+        self.assertEqual(self.store.authenticate(self.user['upload_token']), (None, None))
+
+    def test_enrollment_migrates_legacy_db_without_changing_token(self):
+        self.ingest([event('legacy-before-migration')])
+        with self.store.connect() as conn:
+            old_hash = conn.execute('SELECT token_hash FROM users WHERE email=?', ('person@example.com',)).fetchone()[0]
+            conn.execute('DROP TABLE upload_credentials')
+        upgraded = Store(self.db, ADMIN, self.prices)
+        credential = upgraded.enroll({'email': 'person@example.com', 'device_id': 'upgraded', 'registration_key': 'm' * 48})
+        self.assertEqual(upgraded.authenticate(self.user['upload_token']), ('uploader', 'person@example.com'))
+        self.assertEqual(upgraded.authenticate(credential['upload_token']), ('uploader', 'person@example.com'))
+        with upgraded.connect() as conn:
+            self.assertEqual(conn.execute('SELECT token_hash FROM users WHERE email=?', ('person@example.com',)).fetchone()[0], old_hash)
+        self.assertEqual(upgraded.summary(parse_time(START), parse_time(END))['totals']['requests'], 1)
+
+    def test_enrollment_database_and_users_never_persist_plaintext_secret(self):
+        key = 'PRIVATE_registration_key_which_is_random_0123456789'
+        credential = self.enrollment(key=key)
+        with self.store.connect() as conn:
+            persisted = '\n'.join(conn.iterdump())
+            rows = conn.execute('SELECT registration_key_hash,token_hash FROM upload_credentials').fetchall()
+        for secret in (key, credential['upload_token'], ADMIN):
+            self.assertNotIn(secret, persisted)
+            self.assertNotIn(secret, json.dumps(self.store.users()))
+            self.assertNotIn(secret, json.dumps(self.summary()))
+        self.assertTrue(all(len(v) == 64 for row in rows for v in row))
+
+    def test_enrollment_concurrent_repeat_is_atomic(self):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda _: self.enrollment(), range(16)))
+        self.assertEqual(len({r['upload_token'] for r in results}), 1)
+        self.assertEqual(sum(not r['enrollment_repeated'] for r in results), 1)
+        with self.store.connect() as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM upload_credentials').fetchone()[0], 1)
+
+    def test_enrollment_rejects_unknown_fields_invalid_secret_and_invalid_device(self):
+        valid = {'email': 'person@example.com', 'device_id': 'pc', 'registration_key': 'v' * 48}
+        for body in ({**valid, 'admin': True}, {**valid, 'registration_key': 'x' * 31},
+                     {**valid, 'registration_key': 'x' * 129}, {**valid, 'registration_key': '!' * 48},
+                     {**valid, 'device_id': '../pc'}, {**valid, 'email': 'invalid'}, []):
+            with self.subTest(body=body), self.assertRaises(Invalid):
+                self.store.enroll(body)
+
+    def test_enrollment_http_public_limited_and_not_admin_authority(self):
+        server = make_server('127.0.0.1', 0, self.store)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = 'http://127.0.0.1:' + str(server.server_port)
+        try:
+            body = {'email': 'http-auto@example.com', 'device_id': 'http-device', 'registration_key': 'q' * 48}
+            request = Request(base + '/api/enroll', data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'}, method='POST')
+            with urlopen(request, timeout=3) as response:
+                result = json.loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+            for path in ('/api/users', '/api/summary', '/api/export.csv'):
+                req = Request(base + path, headers={'Authorization': 'Bearer ' + result['upload_token']})
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(req, timeout=3)
+                self.assertEqual(raised.exception.code, 403)
+                raised.exception.close()
+            too_large = Request(base + '/api/enroll', data=b'{}', headers={'Content-Type': 'application/json', 'Content-Length': '8193'}, method='POST')
+            with self.assertRaises(HTTPError) as raised:
+                urlopen(too_large, timeout=3)
+            self.assertEqual(raised.exception.code, 413)
+            raised.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
 
     def test_repeat_overlap_clone_and_new_machine_accumulate_union(self):
         first = self.ingest([event('shared'), event('first')])

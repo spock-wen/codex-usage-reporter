@@ -21,6 +21,7 @@ from collector import BEIJING, TOKEN_FIELDS, estimate_cost_parts, load_prices, p
 
 ROOT = Path(__file__).resolve().parent
 MAX_BODY = 16 * 1024 * 1024
+MAX_ENROLL_BODY = 8 * 1024
 MAX_EVENTS = 50_000
 HASH = re.compile(r'^[0-9a-f]{64}$')
 DEVICE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$')
@@ -31,6 +32,8 @@ COUNT_FIELDS = ('requests', *TOKEN_FIELDS, 'total_tokens')
 class Invalid(ValueError):
     pass
 class AlreadyExists(ValueError):
+    pass
+class EnrollmentConflict(ValueError):
     pass
 
 def now_iso():
@@ -162,11 +165,15 @@ class Store:
         if not isinstance(admin_key, str) or not 24 <= len(admin_key) <= 512:
             raise ValueError('admin key must have 24..512 characters')
         self.db, self.admin_hash = str(db), token_hash(admin_key)
+        # Separate this purpose from admin authentication and request hashing.
+        self.enrollment_key = hmac.new(admin_key.encode('utf-8'), b'codex-usage:enrollment:v1', hashlib.sha256).digest()
         self.prices_path = Path(prices_path or ROOT / 'prices.json')
         with self.connect() as conn:
             conn.executescript('''
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS users (email TEXT PRIMARY KEY, token_hash TEXT UNIQUE NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS upload_credentials (email TEXT NOT NULL REFERENCES users(email), device_id TEXT NOT NULL,
+              registration_key_hash TEXT UNIQUE NOT NULL, token_hash TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS devices (email TEXT NOT NULL REFERENCES users(email), device_id TEXT NOT NULL, last_seen TEXT NOT NULL, received_count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(email,device_id));
             CREATE TABLE IF NOT EXISTS usage_events (event_id TEXT PRIMARY KEY, email TEXT NOT NULL REFERENCES users(email), stamp REAL NOT NULL, canonical TEXT NOT NULL, quarantined INTEGER NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS usage_events_period ON usage_events(stamp,email);
@@ -194,7 +201,46 @@ class Store:
             return 'admin', None
         with self.connect() as conn:
             row = conn.execute('SELECT email FROM users WHERE token_hash=? AND active=1', (hashed,)).fetchone()
+            if row is None:
+                row = conn.execute('SELECT u.email FROM upload_credentials c JOIN users u ON u.email=c.email '
+                                   'WHERE c.token_hash=? AND u.active=1', (hashed,)).fetchone()
         return ('uploader', row['email']) if row else (None, None)
+    def enroll(self, body):
+        if not isinstance(body, dict) or set(body) != {'email', 'device_id', 'registration_key'}:
+            raise Invalid('invalid enrollment object')
+        email, device, registration_key = normalize_email(body['email']), body['device_id'], body['registration_key']
+        if not isinstance(device, str) or not DEVICE.fullmatch(device):
+            raise Invalid('invalid device_id')
+        if not isinstance(registration_key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{32,128}', registration_key):
+            raise Invalid('invalid registration key')
+        key_hash = token_hash('codex-usage:registration-key:v1:' + registration_key)
+        message = canonical_json({'email': email, 'device_id': device, 'registration_key': registration_key})
+        upload_token = 'cu_' + hmac.new(self.enrollment_key, message.encode('utf-8'), hashlib.sha256).hexdigest()
+        hashed = token_hash(upload_token)
+        with self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            existing = conn.execute('SELECT email,device_id,token_hash FROM upload_credentials WHERE registration_key_hash=?', (key_hash,)).fetchone()
+            if existing and (existing['email'] != email or existing['device_id'] != device):
+                raise EnrollmentConflict('registration key already bound')
+            user = conn.execute('SELECT active FROM users WHERE email=?', (email,)).fetchone()
+            if user is not None and not user['active']:
+                raise PermissionError('disabled mailbox')
+            if existing:
+                if not hmac.compare_digest(existing['token_hash'], hashed):
+                    # A changed persistent admin secret cannot reproduce the old
+                    # one-way credential; do not silently rotate an active key.
+                    raise EnrollmentConflict('enrollment key changed')
+                repeated = True
+            else:
+                if user is None:
+                    # Legacy column remains compatible, without issuing or
+                    # replacing a legacy token for this automatic enrollment.
+                    placeholder = token_hash(secrets.token_urlsafe(48))
+                    conn.execute('INSERT INTO users(email,token_hash,created_at) VALUES(?,?,?)', (email, placeholder, now_iso()))
+                conn.execute('INSERT INTO upload_credentials VALUES(?,?,?,?,?)', (email, device, key_hash, hashed, now_iso()))
+                repeated = False
+        return {'ok': True, 'email': email, 'device_id': device, 'upload_token': upload_token,
+                'identity_assurance': 'self_reported', 'enrollment_repeated': repeated}
     def create_user(self, email):
         email, upload_token = normalize_email(email), secrets.token_urlsafe(32)
         try:
@@ -209,6 +255,7 @@ class Store:
             devices = [dict(r) for r in conn.execute('SELECT email,device_id,last_seen,received_count FROM devices ORDER BY device_id')]
         for row in users:
             row['active'] = bool(row['active'])
+            row['identity_assurance'] = 'self_reported'
             row['devices'] = [{k: v for k, v in d.items() if k != 'email'} for d in devices if d['email'] == row['email']]
         return users
     def ingest(self, email, body):
@@ -281,7 +328,7 @@ class Store:
             user_rows.append({'email': user['email'], 'active': bool(user['active']), 'totals': by_user[user['email']].output(user['email'] in incomplete_emails or user['email'] in affected_emails), 'devices': ds, 'last_seen': max((d['last_seen'] for d in ds), default=None), 'submitted': any(r['email'] == user['email'] for r in batch_rows), 'incomplete_batches': sum(not r['is_complete'] for r in latest.values() if r['email'] == user['email'])})
         conflicts = [{'event_id': r['event_id'], 'reason': '+'.join(n for n in ('ownership' if r['ownership'] else '', 'content' if r['content'] else '') if n) or 'quarantined', 'detected_at': r['detected_at'], 'last_detected_at': r['last_detected_at'], 'status': 'quarantined_excluded'} for r in conflict_rows[:100]]
         batches = [{'received_at': r['received_at'], 'email': r['email'], 'device_id': r['device_id'], 'received': r['received'], 'new': r['new_count'], 'duplicates': r['duplicates'], 'conflicts': r['conflicts'], 'rejected': r['rejected'], 'is_complete': bool(r['is_complete']), 'data_status': r['data_status'], 'incomplete_reasons': json.loads(r['incomplete_reasons'])} for r in batch_rows[:100]]
-        return {'period_start': lo.isoformat(), 'period_end': hi.isoformat(), 'timezone': 'Asia/Shanghai', 'totals': overall.output(incomplete), 'by_user': user_rows, 'by_day': [{'day': k, **v.output(incomplete)} for k, v in sorted(by_day.items())], 'by_model': [{'model': k, **v.output(incomplete)} for k, v in sorted(by_model.items())], 'conflicts': conflicts, 'batches': batches, 'quality': {'conflicted_events_excluded': len(conflict_rows), 'incomplete_device_periods': sum(not r['is_complete'] for r in latest.values()), 'missing_users': [u['email'] for u in user_rows if u['active'] and not u['submitted']], 'is_complete': not incomplete, 'account_coverage': 'available uploaded local events only; a submission does not prove full historical coverage'}, 'pricing': {'currency': prices.get('currency', 'USD'), 'basis': prices.get('basis', 'standard_api_equivalent'), 'verified_at': prices.get('verified_at'), 'source': prices.get('source'), 'sha256': token_hash(json.dumps(prices, sort_keys=True, ensure_ascii=True)), 'notes': ['Server recomputes configured API-equivalent costs; subscription billing and quota are separate.']}}
+        return {'period_start': lo.isoformat(), 'period_end': hi.isoformat(), 'timezone': 'Asia/Shanghai', 'identity_assurance': 'self_reported', 'totals': overall.output(incomplete), 'by_user': user_rows, 'by_day': [{'day': k, **v.output(incomplete)} for k, v in sorted(by_day.items())], 'by_model': [{'model': k, **v.output(incomplete)} for k, v in sorted(by_model.items())], 'conflicts': conflicts, 'batches': batches, 'quality': {'conflicted_events_excluded': len(conflict_rows), 'incomplete_device_periods': sum(not r['is_complete'] for r in latest.values()), 'missing_users': [u['email'] for u in user_rows if u['active'] and not u['submitted']], 'is_complete': not incomplete, 'account_coverage': 'available uploaded local events only; a submission does not prove full historical coverage'}, 'pricing': {'currency': prices.get('currency', 'USD'), 'basis': prices.get('basis', 'standard_api_equivalent'), 'verified_at': prices.get('verified_at'), 'source': prices.get('source'), 'sha256': token_hash(json.dumps(prices, sort_keys=True, ensure_ascii=True)), 'notes': ['Server recomputes configured API-equivalent costs; subscription billing and quota are separate.']}}
 
 def csv_safe(value):
     text = str(value)
@@ -314,6 +361,23 @@ class Handler(BaseHTTPRequestHandler):
         self.dispatch('GET')
     def do_POST(self):
         self.dispatch('POST')
+    def read_json(self, maximum):
+        if self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length', [])) != 1:
+            raise Invalid('one Content-Length required')
+        length = int(self.headers['Content-Length'])
+        if not 0 < length <= maximum:
+            self.close_connection = True
+            self.reply(413, {'error': 'request body exceeds bounds'})
+            return None
+        if self.headers.get_content_type() != 'application/json':
+            raise Invalid('application/json required')
+        raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise Invalid('truncated body')
+        data = json.loads(raw, object_pairs_hook=json_unique, parse_constant=lambda _: (_ for _ in ()).throw(Invalid('non-finite JSON')))
+        if not isinstance(data, dict):
+            raise Invalid('object required')
+        return data
     def dispatch(self, method):
         try:
             parsed = urlsplit(self.path)
@@ -324,6 +388,11 @@ class Handler(BaseHTTPRequestHandler):
                 name, mime = static[parsed.path]
                 path = ROOT / 'web' / name
                 return self.reply(200, path.read_bytes(), mime) if path.is_file() else self.reply(404, {'error': 'not found'})
+            if method == 'POST' and parsed.path == '/api/enroll':
+                data = self.read_json(MAX_ENROLL_BODY)
+                if data is None:
+                    return
+                return self.reply(200, self.server.store.enroll(data))
             authorization = self.headers.get('Authorization', '')
             role, email = self.server.store.authenticate(authorization[7:]) if authorization.startswith('Bearer ') else (None, None)
             if not role:
@@ -347,25 +416,17 @@ class Handler(BaseHTTPRequestHandler):
             if method != 'POST' or parsed.path not in ('/api/users', '/api/events'):
                 self.close_connection = True
                 return self.reply(404, {'error': 'not found'})
-            if self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length', [])) != 1:
-                raise Invalid('one Content-Length required')
-            length = int(self.headers['Content-Length'])
-            if not 0 < length <= MAX_BODY:
-                self.close_connection = True
-                return self.reply(413, {'error': 'request body exceeds bounds'})
-            if self.headers.get_content_type() != 'application/json':
-                raise Invalid('application/json required')
-            raw = self.rfile.read(length)
-            if len(raw) != length:
-                raise Invalid('truncated body')
-            data = json.loads(raw, object_pairs_hook=json_unique, parse_constant=lambda _: (_ for _ in ()).throw(Invalid('non-finite JSON')))
-            if not isinstance(data, dict):
-                raise Invalid('object required')
+            data = self.read_json(MAX_BODY)
+            if data is None:
+                return
             if parsed.path == '/api/users':
                 if set(data) != {'email'}:
                     raise Invalid('email required')
                 return self.reply(201, self.server.store.create_user(data['email']))
             return self.reply(200, self.server.store.ingest(email, data))
+        except EnrollmentConflict:
+            self.close_connection = True
+            self.reply(409, {'error': 'registration conflict; no credentials changed'})
         except AlreadyExists:
             self.close_connection = True
             self.reply(409, {'error': 'user already exists; existing upload token was not changed'})
