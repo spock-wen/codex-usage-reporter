@@ -1,12 +1,14 @@
 # 同事安装与每周上报
 
-服务地址：[usage.wenspock.site](https://usage.wenspock.site)。采用 **内部自报 · 邮箱未验证**：自动读取本人机器的 Codex 登录邮箱接入，无需填写邮箱、输入上传令牌、邮件验证码或请管理员预登记。仓库已按 [MIT 许可证](../LICENSE) 开源，安装不需要 GitHub 账号或私仓权限；需已正常登录 Codex。
+服务地址：[codex.wenspock.site](https://codex.wenspock.site)。采用 **内部自报 · 邮箱未验证**：自动读取本人机器的 Codex 登录邮箱接入，无需填写邮箱、输入上传令牌、邮件验证码或请管理员预登记。仓库已按 [MIT 许可证](../LICENSE) 开源，安装不需要 GitHub 账号或私仓权限；需已正常登录 Codex。
+
+新装且没有配置时默认使用 codex.wenspock.site。旧地址 https://usage.wenspock.site 保留相同接口与数据，已有配置继续使用原地址和凭据，更新 skill 不会静默迁移；旧地址直接处理上报，不依赖重定向。
 
 ## 一句话交给 Codex 安装
 
 在每台要统计的机器上，把下面的话复制给 Codex：
 
-> 请用 skill-installer 安装 https://github.com/spock-wen/codex-usage-reporter/tree/main/skills/codex-usage ，安装后运行该 skill 的 scripts/enrollment.py，自动读取本机 Codex 邮箱接入 https://usage.wenspock.site 并保存凭证；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务；已有安装请安全更新并保留私人配置。
+> 请用 skill-installer 安装 https://github.com/spock-wen/codex-usage-reporter/tree/main/skills/codex-usage ，安装后运行该 skill 的 scripts/enrollment.py，自动读取本机 Codex 邮箱接入 https://codex.wenspock.site 并保存凭证；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务；已有安装请安全更新并保留私人配置和原上报地址。
 
 你只需发送这段话，下载 skill、查找 Python 3.10+、执行接入和本地自测都由 Codex 完成，无需本人拉仓库或手动运行命令。公开目录可直接下载，不要求先登录 GitHub。若环境确实缺少可用 Python，Codex 应说明缺少的运行条件，不能声称安装自测完成。
 

@@ -27,6 +27,29 @@ def receiver(base, email, device, registration_key, connect_ip=None, timeout=15)
 
 
 class EnrollmentTests(unittest.TestCase):
+    def test_new_configuration_enrolls_at_primary_domain(self):
+        args = {key: value for key, value in self.args.items() if key != "url"}
+        with mock.patch("enrollment.identity.read_account", return_value=account()), mock.patch("enrollment.request_enrollment", side_effect=receiver) as send:
+            remote = enrollment.ensure_remote(**args)
+        self.assertEqual(send.call_args.args[0], "https://codex.wenspock.site")
+        self.assertEqual(remote["url"], "https://codex.wenspock.site")
+        self.assertEqual(json.loads(self.config.read_text())["url"], "https://codex.wenspock.site")
+
+    def test_existing_old_domain_keeps_address_device_and_credentials(self):
+        old_args = {**self.args, "url": "https://usage.wenspock.site"}
+        with mock.patch("enrollment.identity.read_account", return_value=account()), mock.patch("enrollment.request_enrollment", side_effect=receiver):
+            first = enrollment.ensure_remote(**old_args)
+        before = {path.name: path.read_bytes() for path in self.config.parent.iterdir() if path.is_file()}
+        args = {key: value for key, value in self.args.items() if key != "url"}
+        with mock.patch("enrollment.identity.read_account", return_value=account()), mock.patch("enrollment.request_enrollment") as send:
+            second = enrollment.ensure_remote(**args, allow_account_switch=True)
+        send.assert_not_called()
+        self.assertEqual(second["url"], "https://usage.wenspock.site")
+        self.assertEqual(second["token"], first["token"])
+        self.assertEqual(second["device_id"], first["device_id"])
+        self.assertEqual(client.resolve_remote(config_path=self.config)["url"], "https://usage.wenspock.site")
+        self.assertEqual({path.name: path.read_bytes() for path in self.config.parent.iterdir() if path.is_file()}, before)
+
     def test_explicit_legacy_migration_uses_real_rpc_and_preserves_old_credentials(self):
         self.config.parent.mkdir(parents=True)
         token_path = self.config.parent / "legacy-upload.txt"

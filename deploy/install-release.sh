@@ -21,24 +21,49 @@ MANIFEST="$ASSETS/source-manifest.txt"
 for item in server.py collector.py prices.json web/index.html web/app.js web/style.css; do
     test -f "$SOURCE/$item" || { echo "Missing required source: $item" >&2; exit 1; }
 done
-for item in source-manifest.txt codex-usage.service nginx-bootstrap.conf nginx.conf reload-nginx.sh; do
+for item in source-manifest.txt codex-usage.service nginx-bootstrap.conf nginx.conf nginx-legacy.conf reload-nginx.sh; do
     test -f "$ASSETS/$item" || { echo "Missing deployment asset: $item" >&2; exit 1; }
 done
 if [ -e /opt/codex-usage/current ] && [ ! -L /opt/codex-usage/current ]; then
     echo "Refusing to replace current: expected a managed symlink." >&2
     exit 1
 fi
+AVAILABLE=/etc/nginx/sites-available/codex.wenspock.site
+ENABLED=/etc/nginx/sites-enabled/codex.wenspock.site
+LEGACY_AVAILABLE=/etc/nginx/sites-available/usage.wenspock.site
+LEGACY_ENABLED=/etc/nginx/sites-enabled/usage.wenspock.site
 if [ "$MODE" = tls ]; then
-    test -s /etc/letsencrypt/live/usage.wenspock.site/fullchain.pem
-    test -s /etc/letsencrypt/live/usage.wenspock.site/privkey.pem
+    # Keep separate lineages, so the existing legacy certificate keeps renewing.
+    for hostname in codex.wenspock.site usage.wenspock.site; do
+        test -s "/etc/letsencrypt/live/$hostname/fullchain.pem"
+        test -s "/etc/letsencrypt/live/$hostname/privkey.pem"
+    done
 fi
-AVAILABLE=/etc/nginx/sites-available/usage.wenspock.site
-ENABLED=/etc/nginx/sites-enabled/usage.wenspock.site
-if [ "$MODE" != none ] && { [ -e "$ENABLED" ] || [ -L "$ENABLED" ]; }; then
-    if [ ! -L "$ENABLED" ] || [ "$(readlink -f -- "$ENABLED")" != "$AVAILABLE" ]; then
-        echo "Refusing to replace an unrelated enabled vhost." >&2
-        exit 1
-    fi
+# Only touch our two explicitly managed vhosts. Bootstrap never changes legacy.
+if [ "$MODE" != none ]; then
+    CHECK_HOSTS=codex.wenspock.site
+    if [ "$MODE" = tls ]; then CHECK_HOSTS="$CHECK_HOSTS usage.wenspock.site"; fi
+    for hostname in $CHECK_HOSTS; do
+        site_available="/etc/nginx/sites-available/$hostname"
+        site_enabled="/etc/nginx/sites-enabled/$hostname"
+        if [ -e "$site_enabled" ] || [ -L "$site_enabled" ]; then
+            if [ ! -L "$site_enabled" ] || [ "$(readlink -f -- "$site_enabled")" != "$site_available" ]; then
+                echo "Refusing to replace an unrelated enabled vhost: $hostname" >&2
+                exit 1
+            fi
+        fi
+        if [ -e "$site_available" ] || [ -L "$site_available" ]; then
+            if [ -L "$site_available" ] || [ ! -f "$site_available" ]; then
+                echo "Refusing an unmanaged available vhost: $hostname" >&2
+                exit 1
+            fi
+            if ! grep -Fq "server_name $hostname;" "$site_available" ||
+               ! grep -Eq '^# (Dedicated vhost[.]|Install only as /etc/nginx/sites-available/)' "$site_available"; then
+                echo "Refusing to overwrite an unrelated vhost configuration: $hostname" >&2
+                exit 1
+            fi
+        fi
+    done
 fi
 
 getent group codex-usage >/dev/null || groupadd --system codex-usage
@@ -80,7 +105,7 @@ finally:
     source.close()
 PY
 fi
-for existing in /etc/systemd/system/codex-usage.service "$AVAILABLE" /etc/letsencrypt/renewal-hooks/deploy/codex-usage-reload-nginx; do
+for existing in /etc/systemd/system/codex-usage.service "$AVAILABLE" "$LEGACY_AVAILABLE" /etc/letsencrypt/renewal-hooks/deploy/codex-usage-reload-nginx; do
     if [ -f "$existing" ]; then
         cp -a -- "$existing" "$BACKUP/$(basename "$existing")"
     fi
@@ -129,6 +154,10 @@ if [ "$MODE" != none ]; then
     if [ "$MODE" = bootstrap ]; then VHOST="$ASSETS/nginx-bootstrap.conf"; else VHOST="$ASSETS/nginx.conf"; fi
     install -m 0644 "$VHOST" "$AVAILABLE"
     if [ ! -L "$ENABLED" ]; then ln -s -- "$AVAILABLE" "$ENABLED"; fi
+    if [ "$MODE" = tls ]; then
+        install -m 0644 "$ASSETS/nginx-legacy.conf" "$LEGACY_AVAILABLE"
+        if [ ! -L "$LEGACY_ENABLED" ]; then ln -s -- "$LEGACY_AVAILABLE" "$LEGACY_ENABLED"; fi
+    fi
     if ! nginx -t; then
         echo "nginx validation failed: no reload performed. Restore this site's backup before continuing." >&2
         exit 1

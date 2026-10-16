@@ -1,10 +1,12 @@
 # Codex Usage Reporter
 
-从本地 Codex 日志统计 token 和 API 等值费用，自动读取登录邮箱接入团队服务，在网页查看邮箱、设备、每日和模型分布。当前部署地址：[usage.wenspock.site](https://usage.wenspock.site)。采用**内部自报 · 邮箱未验证**，无需管理员预登记、手填邮箱/上传令牌或邮件验证码；看板查看仍需管理员密钥。
+从本地 Codex 日志统计 token 和 API 等值费用，自动读取登录邮箱接入团队服务，在网页查看邮箱、设备、每日和模型分布。当前部署地址：[codex.wenspock.site](https://codex.wenspock.site)。采用**内部自报 · 邮箱未验证**，无需管理员预登记、手填邮箱/上传令牌或邮件验证码；看板查看仍需管理员密钥。
+
+新装且没有配置时默认使用 codex.wenspock.site。旧地址 https://usage.wenspock.site 保留相同接口与数据，已有配置继续使用原地址和凭据，更新 skill 不会静默迁移；旧地址直接处理上报，不依赖重定向。
 
 同事首次使用只需把下面这段话贴到 Codex，不需要自己拉仓库、运行命令或登录 GitHub：
 
-> 请用 skill-installer 安装 https://github.com/spock-wen/codex-usage-reporter/tree/main/skills/codex-usage ，安装后运行该 skill 的 scripts/enrollment.py，自动读取本机 Codex 邮箱接入 https://usage.wenspock.site 并保存凭证；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务；已有安装请安全更新并保留私人配置。
+> 请用 skill-installer 安装 https://github.com/spock-wen/codex-usage-reporter/tree/main/skills/codex-usage ，安装后运行该 skill 的 scripts/enrollment.py，自动读取本机 Codex 邮箱接入 https://codex.wenspock.site 并保存凭证；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务；已有安装请安全更新并保留私人配置和原上报地址。
 
 仓库按 [MIT 许可证](LICENSE) 开源。需已正常登录 Codex，并有可运行的 Python 3.10+；脚本和安装操作由 Codex 执行。每周一再明确要求 `$codex-usage` 上报上周，详见 [安装与每周一上报指南](docs/colleague-guide.md)。自包含 skill 位于 [skills/codex-usage](skills/codex-usage/SKILL.md)，安装接入不会自动上传历史用量或创建定时任务。
 

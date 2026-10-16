@@ -21,7 +21,7 @@ python scripts/report.py run --period last7 --no-upload --output-dir <报告目�
 
 ## 自动接入与显式上报
 
-团队地址为 https://usage.wenspock.site，采用**内部自报 · 邮箱未验证**。用户明确要求安装并自动接入时，可由仓库的 `python scripts/manage_skill.py install --enroll` 安装并注册；已安装 skill 的首次上报缺少配置时会自动接入，无需输入邮箱、手签上传令牌、邮件验证码或管理员预登记。
+团队主地址为 https://codex.wenspock.site，采用**内部自报 · 邮箱未验证**。新装且未配置时默认接入此地址；旧地址 https://usage.wenspock.site 继续提供相同接口，已有配置继续使用原地址和凭据，不静默迁移。用户明确要求安装并自动接入时，可由仓库的 `python scripts/manage_skill.py install --enroll` 安装并注册；已安装 skill 的首次上报缺少配置时会自动接入，无需输入邮箱、手签上传令牌、邮件验证码或管理员预登记。
 
 自动接入只读本机 Codex app-server 的当前登录邮箱，使用本机独立设备标识和已持久保存的注册秘密向配置服务取得个人上传凭据。每台机器自行注册，同邮箱多机分别持有凭据；不复制 device-id、注册秘密或其他机器的凭据目录。注册重试保持原设备和原注册记录，新机器不会使其他机器或旧版凭据失效。
 

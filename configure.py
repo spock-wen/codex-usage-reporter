@@ -12,7 +12,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import client
 
-DEFAULT_URL = "https://usage.wenspock.site"
+DEFAULT_URL = "https://codex.wenspock.site"
 
 
 def mask_email(email):
