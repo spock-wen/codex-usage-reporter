@@ -1,22 +1,26 @@
 # 同事安装与每周上报
 
-服务地址：[usage.wenspock.site](https://usage.wenspock.site)。现在采用 **内部自报 · 邮箱未验证**：自动读取本人机器的 Codex 登录邮箱接入，无需填写邮箱、输入上传令牌、邮件验证码或请管理员预登记。只需有私仓读取权限，并已正常登录 Codex。
+服务地址：[usage.wenspock.site](https://usage.wenspock.site)。采用 **内部自报 · 邮箱未验证**：自动读取本人机器的 Codex 登录邮箱接入，无需填写邮箱、输入上传令牌、邮件验证码或请管理员预登记。仓库已按 [MIT 许可证](../LICENSE) 开源，安装不需要 GitHub 账号或私仓权限；需已正常登录 Codex。
 
 ## 一句话交给 Codex 安装
 
 在每台要统计的机器上，把下面的话复制给 Codex：
 
-> 请用我的现有 GitHub 权限安装 spock-wen/codex-usage-reporter 私仓里的 codex-usage skill。先找到可运行的 Python 3.10+，克隆或安全更新仓库，保留已有本地修改；执行 python scripts/manage_skill.py install --enroll，使用安装器返回的实际 skill 路径，自动读取本机 Codex 登录邮箱接入 https://usage.wenspock.site。不要让我输入邮箱或上传令牌，不直接读取 OpenAI 认证文件，不自动登录，不打印注册秘密或凭据，不修改代理/hosts。完成后做 --no-upload 本地自测，不立即上传历史用量，不安装定时任务。
+> 请用 skill-installer 安装 https://github.com/spock-wen/codex-usage-reporter/tree/main/skills/codex-usage ，安装后运行该 skill 的 scripts/enrollment.py，自动读取本机 Codex 邮箱接入 https://usage.wenspock.site 并保存凭证；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务；已有安装请安全更新并保留私人配置。
 
-私仓无权限时由管理员授予读取权限；GitHub 未登录时先完成本人 GitHub 的正常认证。API Key 登录、Codex 未登录或当前账户没有邮箱时，通过 Codex 正常流程登录已有账户后重试，不从系统用户名猜邮箱。
+你只需发送这段话，下载 skill、查找 Python 3.10+、执行接入和本地自测都由 Codex 完成，无需本人拉仓库或手动运行命令。公开目录可直接下载，不要求先登录 GitHub。若环境确实缺少可用 Python，Codex 应说明缺少的运行条件，不能声称安装自测完成。
 
-## 手动安装
+API Key 登录、Codex 未登录或当前账户没有邮箱时，通过 Codex 正常流程登录已有账户后重试，不从系统用户名猜邮箱。安装接入只提交邮箱和本设备注册信息，不上传历史用量；本地自测的 --no-upload 也不联网。
 
-使用已有 GitHub 权限克隆：
+给执行安装的 Codex：先使用 skill-installer 的 GitHub URL 安装方式，仅安装上述自包含目录，记录实际目标目录，再用其中 scripts/enrollment.py 完成接入，运行 scripts/report.py run --period last7 --no-upload --output-dir <skill目录外的本地报告目录> 自测并报告结果。不直接读取 OpenAI 认证文件，不打印注册秘密或凭据，不自动登录或修改代理/hosts。不要假设仓库根目录或 manage_skill.py 已下载。若已有同名 skill，skill-installer 不会原位覆盖：先安装到临时目录，比较差异，将旧版备份到 skill 发现目录之外，再安全更新已存在的唯一安装目录；保留未知文件和所有私人状态，不通过删除整个目录解决冲突。新旧发现目录都有同名 skill 时先确认实际使用位置，避免产生第三份。
+
+安装后的 skill 在下一轮对话可用；如果仍未发现，再重启 Codex 检查实际安装位置。接入和自测可直接使用已记录的绝对脚本路径完成，不依赖当前对话立即发现新 skill。
+
+## 可选：自行拉取仓库安装
+
+如果希望手动维护源码，可以匿名克隆公开仓库：
 
 ```sh
-gh repo clone spock-wen/codex-usage-reporter
-# 或使用已有 Git HTTPS/SSH 认证：
 git clone https://github.com/spock-wen/codex-usage-reporter.git
 ```
 
@@ -28,7 +32,7 @@ python scripts/manage_skill.py install --enroll
 
 需要能实际运行的 Python 3.10+；Linux/macOS 可将示例中的 python 换为 python3，Windows Store 占位程序不能使用。安装器默认 ~/.agents/skills/codex-usage；如果只有旧的 ~/.codex/skills/codex-usage，则更新旧位置；同时存在两份时先核实，再用 --dest 显式选择唯一一份。输出 JSON 中的 destination 是实际 skill 目录，后续脚本使用此路径。
 
-自动接入只进行本地账户只读查询和服务注册，不上传用量。当前聊天未发现技能时先新开聊天；仍不显示再重启 Codex，并检查是否装在正确用户目录。官方发现规则见 [Build skills](https://learn.chatgpt.com/docs/build-skills)。也可复制仓库内完整 skills/codex-usage（含 scripts）到一个用户 skill 目录；不要重复安装到新旧两个目录。
+自动接入只进行本地账户只读查询和服务注册，不上传用量。官方发现规则见 [Build skills](https://learn.chatgpt.com/docs/build-skills)。也可复制仓库内完整 skills/codex-usage（含 scripts）到一个用户 skill 目录；不要重复安装到新旧两个目录。
 
 安装后只做本地自测，以下用安装器返回的真实目录替换占位路径。
 
@@ -95,7 +99,9 @@ python "$SKILL_DIR/scripts/client.py" --events ./reports/backfill-events.json
 
 ## 更新与私人状态
 
-在原仓库目录执行：
+普通成员将前面的“一句话”再次发送给 Codex，并说明更新现有 skill 即可；不需要自行维护仓库。更新只替换 skill 程序，保留原设备和私人配置，不会因此自动上传。
+
+选择自行维护源码的成员，在原仓库目录执行：
 
 ```sh
 git pull --ff-only
