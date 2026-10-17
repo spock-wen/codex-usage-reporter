@@ -97,6 +97,37 @@ class ServerStoreTests(unittest.TestCase):
             self.store.create_user('person@example.com')
         self.assertEqual(self.store.authenticate(self.user['upload_token'])[0], 'uploader')
 
+    def test_people_registry_replaces_atomically_and_normalizes_email(self):
+        rows = [{'email': ' Person@Example.COM ', 'name': '  Example Person ', 'department': ' Team A '},
+                {'email': 'other@example.com', 'name': 'Other Person', 'department': 'Team B'}]
+        result = self.store.replace_people({'people': rows})
+        self.assertEqual(result['count'], 2)
+        self.assertEqual([row['email'] for row in result['people']], ['person@example.com', 'other@example.com'])
+        self.assertEqual(result['people'][0]['name'], 'Example Person')
+        self.assertEqual(result['people'][0]['department'], 'Team A')
+        self.assertTrue(result['people'][0]['updated_at'])
+        old = self.store.people()
+        invalid = (
+            {'people': [rows[0], {'email': 'person@example.com', 'name': 'Duplicate', 'department': 'Team'}]},
+            {'people': [{'email': 'bad', 'name': 'Name', 'department': 'Team'}]},
+            {'people': [{'email': 'new@example.com', 'name': '  ', 'department': 'Team'}]},
+            {'people': [{'email': 'new@example.com', 'name': 'Name', 'department': 'Team', 'extra': True}]},
+            {'people': 'not-a-list'},
+            {'unknown': []},
+        )
+        for body in invalid:
+            with self.subTest(body=body), self.assertRaises(Invalid):
+                self.store.replace_people(body)
+            self.assertEqual(self.store.people(), old)
+        self.assertEqual(self.store.replace_people({'people': [rows[1]]})['count'], 1)
+        self.assertEqual([row['email'] for row in self.store.people()], ['other@example.com'])
+
+    def test_people_registry_table_is_created_when_opening_existing_database(self):
+        with self.store.connect() as conn:
+            conn.execute('DROP TABLE people_registry')
+        self.store = Store(self.db, ADMIN, self.prices)
+        self.assertEqual(self.store.people(), [])
+
     def enrollment(self, email='auto@example.com', device='automatic-pc', key='a' * 48):
         return self.store.enroll({'email': email, 'device_id': device, 'registration_key': key})
 
@@ -194,12 +225,40 @@ class ServerStoreTests(unittest.TestCase):
                 result = json.loads(response.read())
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.headers['Cache-Control'], 'no-store')
-            for path in ('/api/users', '/api/summary', '/api/export.csv'):
+            for path in ('/api/users', '/api/people', '/api/summary', '/api/export.csv'):
                 req = Request(base + path, headers={'Authorization': 'Bearer ' + result['upload_token']})
                 with self.assertRaises(HTTPError) as raised:
                     urlopen(req, timeout=3)
                 self.assertEqual(raised.exception.code, 403)
                 raised.exception.close()
+            unauthorized_put = Request(
+                base + '/api/people',
+                data=json.dumps({'people': []}).encode(),
+                headers={'Authorization': 'Bearer ' + result['upload_token'], 'Content-Type': 'application/json'},
+                method='PUT')
+            with self.assertRaises(HTTPError) as raised:
+                urlopen(unauthorized_put, timeout=3)
+            self.assertEqual(raised.exception.code, 403)
+            raised.exception.close()
+            for path, method, payload in (
+                    ('/api/people', 'PUT', {'people': [{'email': 'mapped@example.com', 'name': 'Mapped', 'department': 'Team'}]}),
+                    ('/api/people', 'GET', None),
+                    ('/api/users', 'GET', None)):
+                headers = {'Authorization': 'Bearer ' + ADMIN}
+                if payload is not None:
+                    headers['Content-Type'] = 'application/json'
+                req = Request(base + path, data=json.dumps(payload).encode() if payload is not None else None,
+                              headers=headers, method=method)
+                with urlopen(req, timeout=3) as response:
+                    value = json.loads(response.read())
+                    self.assertEqual(response.status, 200)
+                if method == 'PUT':
+                    self.assertEqual(value['count'], 1)
+                elif path == '/api/users':
+                    self.assertIn('users', value)
+                    self.assertEqual(value['people'][0]['email'], 'mapped@example.com')
+                else:
+                    self.assertEqual(value['people'][0]['name'], 'Mapped')
             too_large = Request(base + '/api/enroll', data=b'{}', headers={'Content-Type': 'application/json', 'Content-Length': '8193'}, method='POST')
             with self.assertRaises(HTTPError) as raised:
                 urlopen(too_large, timeout=3)

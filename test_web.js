@@ -28,7 +28,8 @@ class Element {
   append(...children) { this.children.push(...children); }
   prepend(...children) { this.children.unshift(...children); }
   replaceChildren(...children) { this.ownText = ''; this.children = children; if (this.tagName === 'select') this.currentValue = this.options[0]?.value || ''; }
-  setAttribute(name, value) { this.attributes[name] = String(value); }
+  setAttribute(name, value) { this.attributes[name] = String(value); if (name === 'class') this.className = String(value); }
+  getAttribute(name) { return this.attributes[name] ?? null; }
   removeAttribute(name) { delete this.attributes[name]; }
   querySelector(selector) { return descendants(this).find(child => selector.startsWith('.') ? child.classList.contains(selector.slice(1)) : child.tagName === selector) || null; }
   focus() {}
@@ -116,15 +117,22 @@ for (const [now, start, end] of [
   assert.equal(ui.calls.length, 0);
 });
 
-test('all five navigation pages remain reachable without inventing data', () => {
+test('four navigation pages remain reachable and the people maintenance page is hidden', () => {
   const ui = boot();
-  for (const page of ['overview', 'weekly', 'members', 'sync', 'people']) {
+  for (const page of ['overview', 'weekly', 'members', 'sync']) {
     ui.click('page', page);
-    for (const other of ['overview', 'weekly', 'members', 'sync', 'people']) assert.equal(ui.elements.get('page-' + other).hidden, other !== page);
+    for (const other of ['overview', 'weekly', 'members', 'sync']) assert.equal(ui.elements.get('page-' + other).hidden, other !== page);
+    assert.equal(ui.elements.get('source-filter').hidden, page === 'sync');
+    assert.equal(ui.elements.get('member-filters').hidden, page === 'sync');
+    assert.equal(ui.elements.get('toolbar-note').hidden, page === 'sync');
+    if (page === 'overview') assert.match(ui.elements.get('toolbar-note').textContent, /Top 10 占比.*分母/);
+    if (page === 'weekly') assert.match(ui.elements.get('toolbar-note').textContent, /固定 Top 5 占比图不随姓名筛选变化/);
+    if (page === 'members') assert.match(ui.elements.get('toolbar-note').textContent, /左侧成员及详情/);
   }
+  ui.click('page', 'overview');
+  assert.doesNotMatch(html, /data-page="people"|id="page-people"/);
   assert.equal(ui.calls.length, 0);
-  assert.doesNotMatch(ui.elements.get('overview-stats').textContent, /120\.0M|36\.0M/);
-  assert.match(ui.elements.get('people-content').textContent, /人员名册尚未接入/);
+  assert.doesNotMatch(ui.elements.get('ranking-table').textContent, /120\.0M|36\.0M/);
 });
 
 test('this-week chooses a whole natural week, while rolling calendar-day range never calls Cursor with invalid bounds', async () => {
@@ -145,12 +153,13 @@ test('this-week chooses a whole natural week, while rolling calendar-day range n
 
 test('source selection changes visible tokens without mixing fees or request definitions', async () => {
   const ui = boot({ login: true }); await flush();
-  const value = () => tagged(ui.elements.get('overview-stats'), 'stat-value')[0].textContent;
+  assert.equal(ui.elements.get('access-panel').hidden, true);
+  const value = () => tagged(ui.elements.get('share-chart'), 'donut-center')[0].children[0].textContent;
   assert.equal(value(), '150');
   const cards = ui.elements.get('source-cards').children;
   assert.match(cards[0].textContent, /\$1\.25/); assert.match(cards[0].textContent, /API 等值/);
   assert.match(cards[1].textContent, /\$5\.00/); assert.match(cards[1].textContent, /接口金额/);
-  assert.doesNotMatch(ui.elements.get('overview-stats').textContent, /\$/);
+  assert.doesNotMatch(ui.elements.get('share-chart').textContent, /\$/);
   assert.match(cards[0].textContent, /有效响应/); assert.match(cards[1].textContent, /用量记录/);
   assert.equal(ui.elements.get('share-metric').options.find(option => option.value === 'cost').disabled, true);
   ui.click('source', 'cursor'); await flush(); assert.equal(value(), '50');
@@ -158,6 +167,8 @@ test('source selection changes visible tokens without mixing fees or request def
   assert.doesNotMatch(ui.elements.get('ranking-table').textContent, /codex@example/);
   ui.click('source', 'codex'); await flush(); assert.equal(value(), '100');
   assert.doesNotMatch(ui.elements.get('ranking-table').textContent, /cursor@example/);
+  ui.elements.get('disconnect-button').click();
+  assert.equal(ui.elements.get('access-panel').hidden, false);
 });
 
 test('overview ranking sorts by text and underlying Token values, with accessible direction state', async () => {
@@ -192,21 +203,17 @@ test('Cursor account-list name and department enrich the matching Codex email wi
   const codexRow = { email: address, submitted: true, totals: totals(100), devices: [] };
   const cursorRow = { email: address, name: 'Cursor成员', department: '研发一部', available: true,
     totals: totals(50, { usage_records: 2, charged_cents: 500, charge_complete: true }), models: [] };
-  const ui = boot({ login: true, codexData: codex([codexRow]), cursorData: cursor([cursorRow]) });
+  const ui = boot({ login: true, people: [], codexData: codex([codexRow]), cursorData: cursor([cursorRow]) });
   await flush();
   const table = findTable(ui.elements.get('ranking-table'));
   assert.equal(tableBody(table).length, 1);
   assert.deepEqual(tableBody(table)[0].children.slice(0, 5).map(cell => cell.textContent), ['Cursor成员', '研发一部', '100', '50', '150']);
   assert.match(ui.elements.get('share-title').textContent, /Cursor姓名映射/);
-  assert.match(ui.elements.get('overview-stats').textContent, /有用量姓名映射1/);
   ui.click('page', 'members'); await flush();
-  assert.match(ui.elements.get('member-list-note').textContent, /Cursor账号清单提供姓名\/部门映射/);
+  assert.match(ui.elements.get('member-list-note').textContent, /Cursor清单提供姓名和部门映射/);
   assert.match(ui.elements.get('member-detail').textContent, /Cursor账号清单映射（邮箱未验证）/);
-  ui.click('page', 'people');
-  const peopleTable = findTable(ui.elements.get('people-content'));
-  assert.equal(tableBody(peopleTable).length, 2);
-  assert.ok(tableBody(peopleTable).every(row => row.children[0].textContent === 'Cursor成员' && row.children[1].textContent === '研发一部'));
-  assert.ok(tableBody(peopleTable).every(row => /Cursor账号清单映射/.test(row.children[4].textContent)));
+  assert.match(ui.elements.get('member-list').textContent, /Cursor成员/);
+  assert.match(ui.elements.get('member-detail').textContent, /研发一部/);
 });
 
 test('explicit people registry name and department take precedence over Cursor account metadata', async () => {
@@ -222,22 +229,21 @@ test('explicit people registry name and department take precedence over Cursor a
   assert.equal(tableBody(table).length, 1);
   assert.equal(tableBody(table)[0].children[0].textContent, '名册姓名');
   assert.equal(tableBody(table)[0].children[1].textContent, '名册部门');
-  ui.click('page', 'people');
-  const peopleTable = findTable(ui.elements.get('people-content'));
-  assert.ok(tableBody(peopleTable).every(row => row.children[0].textContent === '名册姓名'));
-  assert.ok(tableBody(peopleTable).every(row => row.children[1].textContent === '名册部门'));
-  assert.ok(tableBody(peopleTable).every(row => /人员名册映射/.test(row.children[4].textContent)));
+  ui.click('page', 'members'); await flush();
+  assert.match(ui.elements.get('member-list').textContent, /名册姓名/);
+  assert.match(ui.elements.get('member-detail').textContent, /名册部门/);
+  assert.match(ui.elements.get('member-detail').textContent, /人员名册映射/);
 });
 
 test('a missing source leaves the other usable instead of inventing zero data', async () => {
   const ui = boot({ login: true, fetcher: async url => url.pathname.endsWith('/cursor/summary') ? response({}, 404) : url.pathname.endsWith('/users') ? response({ users: [] }) : response(codex()) });
   await flush();
   assert.equal(ui.elements.get('connection-label').textContent, '已连接');
-  assert.equal(tagged(ui.elements.get('overview-stats'), 'stat-value')[0].textContent, '100');
+  assert.match(ui.elements.get('source-cards').children[0].textContent, /观测 Token100/);
   assert.match(ui.elements.get('source-cards').children[1].textContent, /尚未接入/);
   assert.match(ui.elements.get('share-scope').textContent, /部分来源缺失/);
   ui.click('source', 'cursor');
-  assert.equal(tagged(ui.elements.get('overview-stats'), 'stat-value')[0].textContent, '—');
+  assert.match(ui.elements.get('share-chart').textContent, /连接后/);
   assert.match(ui.elements.get('share-chart').textContent, /连接后/);
 });
 
@@ -248,11 +254,11 @@ test('failed Cursor account with null fields remains visible and never becomes a
   assert.match(ui.elements.get('member-list').textContent, /failed@example\.invalid/);
   assert.match(ui.elements.get('member-detail').textContent, /暂无可用记录/);
   assert.doesNotMatch(ui.elements.get('member-detail').textContent, /0 Token|0 条用量记录|\$0\.00/);
-  assert.match(ui.elements.get('ranking-table').textContent, /采集失败/);
+  assert.match(ui.elements.get('source-cards').textContent, /1 个账号采集失败/);
   assert.match(ui.elements.get('member-detail').textContent, /模型记录不可得/);
 });
 
-test('Top 10 and Other use a fixed team denominator and separate remaining, unmapped and shared accounts', async () => {
+test('overview keeps the Top 10 and Other share, limits the ranking, and leaves full membership on the members page', async () => {
   const people = Array.from({ length: 11 }, (_, index) => ({ id: 'person-' + index, name: '成员' + (index + 1), department: index < 5 ? '研发' : '产品', emails: ['member' + index + '@example.invalid'] }));
   const rows = people.map(person => ({ email: person.emails[0], submitted: true, totals: totals(10), devices: [] }));
   rows.push({ email: 'unknown@example.invalid', submitted: true, totals: totals(30), devices: [] }, { email: 'shared@example.invalid', shared: true, submitted: true, totals: totals(20), devices: [] });
@@ -262,14 +268,31 @@ test('Top 10 and Other use a fixed team denominator and separate remaining, unma
   const shareRows = tagged(ui.elements.get('share-chart'), 'share-row');
   assert.equal(shareRows.length, 11); assert.match(shareRows.at(-1).textContent, /Other6030%/);
   assert.equal(tagged(ui.elements.get('share-chart'), 'donut-center')[0].textContent, '200Token');
-  const groups = tagged(ui.elements.get('other-breakdown'), 'other-group');
-  assert.match(groups[0].textContent, /其余人员名册映射账号 · 1.*10/);
-  assert.match(groups[1].textContent, /未关联账号 · 1.*30/);
-  assert.match(groups[2].textContent, /共享账号 · 1.*20/);
+  assert.equal(tagged(ui.elements.get('share-chart'), 'donut-slice').length, 11);
+  assert.ok(tagged(ui.elements.get('share-chart'), 'donut-slice').every(slice => /Token · \d/.test(slice.attributes.title)));
   assert.match(ui.elements.get('ranking-table').textContent, /成员1/);
+  assert.equal(tableBody(findTable(ui.elements.get('ranking-table'))).length, 10);
   ui.change('member-filter', '成员1', 'input');
   assert.equal(tagged(ui.elements.get('share-chart'), 'donut-center')[0].textContent, '200Token');
-  assert.match(ui.elements.get('share-scope').textContent, /不改变分母/);
+  assert.match(ui.elements.get('share-scope').textContent, /不随姓名或部门筛选改变/);
+  ui.change('member-filter', '', 'input');
+  ui.click('page', 'members'); await flush();
+  assert.equal(tagged(ui.elements.get('member-list'), 'member-item').length, 13);
+});
+
+test('overview model composition shows three models per platform with hover details', async () => {
+  const codexModels = [1, 2, 3, 4].map(index => ({ model: 'codex-model-' + index, total_tokens: 100 - index * 10 }));
+  const cursorModels = [1, 2, 3, 4].map(index => ({ model: 'cursor-model-' + index, total_tokens: 80 - index * 10 }));
+  const ui = boot({ login: true, codexData: codex(undefined, { by_model: codexModels }), cursorData: cursor(undefined, { by_model: cursorModels }) });
+  await flush();
+  const models = tagged(ui.elements.get('model-list'), 'model-item');
+  assert.equal(models.length, 6);
+  assert.equal(tagged(ui.elements.get('model-list'), 'model-source-heading').length, 2);
+  const names = ui.elements.get('model-list').textContent;
+  assert.match(names, /codex-model-1/); assert.match(names, /codex-model-3/); assert.doesNotMatch(names, /codex-model-4/);
+  assert.match(names, /cursor-model-1/); assert.match(names, /cursor-model-3/); assert.doesNotMatch(names, /cursor-model-4/);
+  assert.ok(tagged(ui.elements.get('model-list'), 'model-track').every(track => /Token · 占平台/.test(track.attributes.title)));
+  assert.match(ui.elements.get('model-list').textContent, /另有 2 个模型未展示/);
 });
 
 test('member sidebar exposes accessible name, department, and Token sort controls', async () => {
@@ -304,6 +327,9 @@ test('weekly user summary table sorts its eight-week totals', async () => {
   const ui = boot({ login: true, codexData: codex(rows), cursorData: cursor([]) }); await flush();
   ui.click('page', 'weekly');
   for (let attempt = 0; attempt < 6; attempt++) await flush();
+  assert.equal(tagged(ui.elements.get('weekly-total'), 'week-fill').length, 8);
+  assert.ok(tagged(ui.elements.get('weekly-total'), 'week-fill').every(fill => /Token：.*团队占比：/.test(fill.attributes.title)));
+  assert.ok(tagged(ui.elements.get('weekly-share'), 'stack-segment').every(segment => segment.attributes.title));
   const table = findTable(ui.elements.get('weekly-share'));
   assert.ok(table, 'weekly page should expose a sortable user summary');
   assert.deepEqual(headerLabels(table), ['姓名 / 邮箱', '部门', '8 周观测 Token', '最近周 Token', '覆盖情况']);
@@ -313,6 +339,11 @@ test('weekly user summary table sorts its eight-week totals', async () => {
   assert.deepEqual(names(), ['big@example.invalid', 'small@example.invalid']);
   sortHeader(table, 2);
   assert.deepEqual(names(), ['small@example.invalid', 'big@example.invalid']);
+  ui.change('member-filter', 'nobody@example.invalid', 'input');
+  for (let attempt = 0; attempt < 6; attempt++) await flush();
+  const filteredLegend = tagged(ui.elements.get('weekly-share'), 'legend-button');
+  assert.ok(filteredLegend.every(button => button.disabled));
+  assert.ok(filteredLegend.every(button => /不在当前成员筛选范围/.test(button.attributes.title)));
 });
 
 test('source cost subtotals preserve incomplete charge state instead of pretending to be a complete bill', async () => {
@@ -321,7 +352,6 @@ test('source cost subtotals preserve incomplete charge state instead of pretendi
   const card = ui.elements.get('source-cards').children[1];
   assert.match(card.textContent, /\$3\.20/); assert.match(card.textContent, /费用不完整/);
   assert.match(card.textContent, /非订阅发票或支付账单/);
-  assert.match(ui.elements.get('notice').className, /warning/);
 });
 
 test('weekly source switch prevents old asynchronous requests from overwriting the new selection', async () => {
@@ -397,19 +427,15 @@ test('Codex sync table sorts new-response counts numerically', async () => {
   assert.equal(syncTable.children[0].children[0].children[5].attributes['aria-sort'], 'descending');
 });
 
-test('people table sorts account text while leaving its original order intact until clicked', async () => {
+test('members page keeps source account details after the separate people page is removed', async () => {
   const rows = [
     { email: 'zulu@example.invalid', submitted: true, totals: totals(20), devices: [] },
     { email: 'alpha@example.invalid', submitted: true, totals: totals(10), devices: [] },
   ];
   const ui = boot({ login: true, codexData: codex(rows), cursorData: cursor([]) }); await flush();
-  ui.click('page', 'people');
-  const table = findTable(ui.elements.get('people-content'));
-  const emails = () => tableBody(table).map(row => row.children[3].textContent);
-  assert.deepEqual(emails(), ['zulu@example.invalid', 'alpha@example.invalid']);
-  sortHeader(table, 3);
-  assert.deepEqual(emails(), ['alpha@example.invalid', 'zulu@example.invalid']);
-  assert.equal(table.children[0].children[0].children[3].attributes['aria-sort'], 'ascending');
+  ui.click('page', 'members'); await flush();
+  assert.match(ui.elements.get('member-detail').textContent, /zulu@example\.invalid/);
+  assert.doesNotMatch(html, /data-page="people"|id="page-people"/);
 });
 
 test('member model table sorts currency using numeric amounts rather than formatted strings', async () => {
@@ -422,7 +448,7 @@ test('member model table sorts currency using numeric amounts rather than format
   const ui = boot({ login: true, codexData: codex([]), cursorData: cursor([account], { totals: account.totals }) }); await flush();
   ui.click('source', 'cursor'); await flush(); ui.click('page', 'members'); await flush();
   const tables = descendants(ui.elements.get('member-detail')).filter(element => element.tagName === 'table');
-  assert.equal(tables.length, 2, ui.elements.get('member-detail').textContent);
+  assert.equal(tables.length, 1, ui.elements.get('member-detail').textContent);
   const modelTable = tables.find(table => headerLabels(table).includes('来源费用小计'));
   const models = () => tableBody(modelTable).map(row => row.children[1].textContent);
   assert.equal(modelTable.children[0].children[0].children.length, 8, headerLabels(modelTable).join('|'));

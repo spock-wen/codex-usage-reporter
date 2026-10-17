@@ -28,7 +28,7 @@ Cursor 源金额按 0.000001 cent 精度校验，以保留 API 实际返回的�
 
 - 最小服务清单见 [deploy/source-manifest.txt](deploy/source-manifest.txt)：`server.py`、`collector.py`、`cursor_weekly.py`、`prices.json`、看板三文件和 `deploy/cursor-weekly.sh`。服务端直接从 collector 导入 Codex token 定义、时间解析和计价函数；不需要 identity、client、测试、Cursor 账号清单或本机认证文件。
 - 代码存于 `/opt/codex-usage/releases/<版本>`，`current` 指向当前版本。代码 root 所有、服务用户只读。
-- 单独系统用户/组 `codex-usage`，shell 为 `/usr/sbin/nologin`；SQLite 数据在 `/var/lib/codex-usage/usage.sqlite3`，仅服务用户可写。Cursor 周快照与采集审计记录保存在此数据库，账号映射的使用人和部门也会写入其中；代码通过增量 SQLite migration 为旧数据库补列，不要求清库重建。
+- 单独系统用户/组 `codex-usage`，shell 为 `/usr/sbin/nologin`；SQLite 数据在 `/var/lib/codex-usage/usage.sqlite3`，仅服务用户可写。Cursor 周快照、采集审计记录和管理员维护的邮箱/姓名/部门人员名册均保存在此数据库；代码通过增量 SQLite migration 为旧数据库补表或补列，不要求清库重建。名册仅经管理员 API 读写，不进入源码仓库，接口见 [人员名册说明](docs/person-registry.md)。
 - 配置 `/etc/codex-usage/server.json` 为 `root:codex-usage 0640`，内容仅需 `{"admin_key":"至少24字符的随机密钥"}`。安装器只在不存在时生成，不打印、不轮换既有密钥，不备份到源码目录。
 - systemd 开机自启，失败重启，仅监听 `127.0.0.1:18765`；Nginx 在 443 反代根路径，不使用子路径重写。后台数据库和凭据均不在网站静态白名单内。
 

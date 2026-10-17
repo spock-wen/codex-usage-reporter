@@ -12,33 +12,31 @@
       <button class="nav-item" data-page="weekly"><span>▥</span>每周分析</button>
       <button class="nav-item" data-page="members"><span>♧</span>成员与模型</button>
       <button class="nav-item" data-page="sync"><span>↻</span>数据同步</button>
-      <button class="nav-item" data-page="people"><span>▤</span>人员与账号</button>
     </nav><p class="sidebar-foot">内部统计 · 邮箱未验证<br>按来源保留原始口径</p>
   </aside>
   <div class="workspace">
     <header class="page-header"><div><p class="eyebrow">AI DEVELOPMENT / USAGE</p><h1 id="page-title">团队概览</h1><p id="page-subtitle">已接收的可用记录，多账号关联，按请求去重。</p></div><span class="service-pill"><i></i><span id="connection-label">尚未连接</span></span></header>
-    <section class="access-panel"><div><h2>连接统计空间</h2><p>管理员密钥仅保存在当前标签页；成员通过 skill 自动接入。</p></div><form id="access-form"><label class="sr-only" for="admin-key">管理员密钥</label><input id="admin-key" type="password" autocomplete="off" placeholder="管理员密钥" required><button class="button primary" type="submit">连接看板</button><button class="button quiet" id="disconnect-button" type="button" hidden>断开</button></form></section>
-    <section class="toolbar" aria-label="全局统计筛选">
+    <section id="access-panel" class="access-panel"><div><h2>连接统计空间</h2><p>管理员密钥仅保存在当前标签页；成员通过 skill 自动接入。</p></div><form id="access-form"><label class="sr-only" for="admin-key">管理员密钥</label><input id="admin-key" type="password" autocomplete="off" placeholder="管理员密钥" required><button class="button primary" type="submit">连接看板</button><button class="button quiet" id="disconnect-button" type="button" hidden>断开</button></form></section>
+    <section class="toolbar" aria-label="统计范围和成员筛选">
       <div class="period-controls"><div class="date-range"><label class="sr-only" for="start-date">开始日期（含）</label><input id="start-date" type="date" required><span>→</span><label class="sr-only" for="end-date">结束日期（不含）</label><input id="end-date" type="date" required></div><p class="field-help">北京时间 · 结束日期不包含在内</p><div class="quick-periods" role="group" aria-label="快捷区间"><button class="chip" data-period="last7" type="button">近 7 个自然日</button><button class="chip" data-period="this-week" type="button">本周</button><button class="chip active" data-period="last-week" type="button">上周自然周</button></div></div>
-      <div class="segmented" role="group" aria-label="来源"><button class="active" data-source="all" type="button">全部</button><button data-source="codex" type="button">Codex</button><button data-source="cursor" type="button">Cursor</button></div>
-      <label class="filter-label">部门<select id="department-filter"><option value="">全部部门</option></select></label>
-      <label class="filter-label search-label">姓名或邮箱<input id="member-filter" type="search" placeholder="搜索姓名或邮箱" autocomplete="off"></label>
+      <div id="source-filter" class="segmented" role="group" aria-label="统计来源"><button class="active" data-source="all" type="button">全部</button><button data-source="codex" type="button">Codex</button><button data-source="cursor" type="button">Cursor</button></div>
+      <div id="member-filters" class="member-filters"><label class="filter-label">部门<select id="department-filter"><option value="">全部部门</option></select></label>
+      <label class="filter-label search-label">姓名或邮箱<input id="member-filter" type="search" placeholder="搜索姓名或邮箱" autocomplete="off"></label></div>
+      <p id="toolbar-note" class="toolbar-note"></p>
       <div class="toolbar-actions"><button id="refresh-button" class="button secondary" type="button">↻ 刷新</button><button id="export-button" class="button secondary" type="button" disabled>↓ 导出 CSV</button></div>
     </section>
     <div id="notice" class="notice" role="status" aria-live="polite">连接后显示真实记录；没有数据时不会填充示例。</div>
     <div id="conflict-banner" class="notice warning" role="alert" hidden></div>
     <main>
       <section id="page-overview" class="view-page">
-        <div id="overview-stats" class="stats-grid"></div>
         <div id="source-cards" class="source-grid"></div>
-        <p class="scope-note">Token 仅在统一为输入＋输出后汇总；缓存已包含在输入中。费用分来源展示，不合并为团队实际支出；两来源仅在各自来源内去重。</p>
-        <div class="overview-grid"><article class="panel"><div class="panel-heading"><div><p class="eyebrow">TEAM SHARE</p><h2 id="share-title">所选区间 Top 10 用量占比</h2></div><label class="sr-only" for="share-metric">占比指标</label><select id="share-metric"><option value="tokens">Token</option><option value="cost">已定价费用</option><option value="requests">请求 / 用量记录</option></select></div><p class="panel-help" id="share-scope"></p><div id="share-chart" class="share-layout"></div><details id="other-details" class="other-details"><summary>展开 Other：其余成员、未关联及共享账号</summary><div id="other-breakdown"></div></details></article>
-        <article class="panel"><div class="panel-heading"><div><p class="eyebrow">PLATFORM / MODEL</p><h2>平台与模型构成</h2></div></div><div id="model-list" class="panel-content"></div></article></div>
-        <article class="panel"><div class="panel-heading"><h2>成员 / 账号用量排行</h2><button class="text-button" data-go="members">查看成员与模型 →</button></div><div id="ranking-table" class="table-scroll"></div></article>
+        <div class="overview-grid"><article class="panel"><div class="panel-heading"><div><p class="eyebrow">TEAM SHARE</p><h2 id="share-title">所选区间 Top 10 用量占比</h2></div><label class="sr-only" for="share-metric">占比指标</label><select id="share-metric"><option value="tokens">Token</option><option value="cost">已定价费用</option><option value="requests">请求 / 用量记录</option></select></div><p class="panel-help" id="share-scope"></p><div id="share-chart" class="share-layout"></div></article>
+        <article class="panel"><div class="panel-heading"><div><p class="eyebrow">PLATFORM / MODEL</p><h2>平台与模型 · 各平台 Top 3</h2></div><button class="text-button" data-go="members">查看成员模型明细 →</button></div><div id="model-list" class="panel-content"></div></article></div>
+        <article class="panel"><div class="panel-heading"><h2>成员 / 账号用量 Top 10</h2><button class="text-button" data-go="members">查看完整列表 →</button></div><p class="panel-help">按合计 Token 取前 10；点击列标题可调整这 10 条记录的顺序。</p><div id="ranking-table" class="table-scroll"></div></article>
       </section>
       <section id="page-weekly" class="view-page" hidden>
-        <div class="notice info">显示所选区间结束日所在周及之前 7 周；未结束周单独标注。团队分母不随姓名或部门筛选改变。</div>
-        <div class="panel-heading outside-heading"><h2 id="weekly-range-title">最近 8 周</h2><button id="weekly-reload" class="button secondary" type="button">刷新周数据</button></div>
+        <div class="notice info">显示所选区间结束日所在周及之前 7 周；未结束周单独标注。</div>
+        <div class="panel-heading outside-heading"><h2 id="weekly-range-title">最近 8 周</h2><button id="weekly-reload" class="button secondary" type="button">重新读取周数据</button></div>
         <article class="panel"><div class="panel-heading"><h2>团队每周观测 Token</h2></div><div id="weekly-total" class="panel-content"></div></article>
         <div class="two-columns"><article class="panel"><div class="panel-heading"><h2>每周用户占比</h2></div><p class="panel-help">整个 8 周固定 Top 5 与颜色，其余合并为 Other；缺失来源不按零计算。</p><div id="weekly-share" class="panel-content"></div></article><article class="panel"><div class="panel-heading"><h2>选中成员 / 账号趋势</h2></div><div class="panel-content"><label class="filter-label">成员 / 账号<select id="weekly-member"></select></label><div id="weekly-member-chart"></div></div></article></div>
       </section>
@@ -47,9 +45,8 @@
         <div class="segmented sync-tabs" role="group" aria-label="同步记录来源"><button data-sync="codex" class="active" type="button">Codex · 本地上报</button><button data-sync="cursor" type="button">Cursor · 服务器采集</button></div>
         <div id="sync-intro" class="notice info"></div><div id="sync-content"></div>
       </section>
-      <section id="page-people" class="view-page" hidden><div id="people-content"></div></section>
     </main>
-    <footer class="page-footer"><span>可用记录小计 · 非完整账户用量或订阅账单</span><span id="last-updated">尚未同步</span></footer>
+    <footer class="page-footer"><span>观测小计 · Token=输入＋输出（缓存含在输入）；费用分来源，非账单</span><span id="last-updated">尚未同步</span></footer>
   </div>
 </body>
 </html>

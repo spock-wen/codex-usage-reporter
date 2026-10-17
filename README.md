@@ -29,7 +29,7 @@ Codex 从同事本机日志上报，Cursor 由 65 服务器集中按周拉取；
 - `enrollment.py`：读取本机 Codex 登录邮箱、自动注册本设备凭据并保存私人状态；不使用 OpenAI 登录令牌上报。`client.py` 上传保存的事件包，采用 HTTPS、有界重试和严格 ACK 校验，禁止重定向；`report.py` 串起接入、采集、保存和显式上报。
 - `server.py`：Python HTTP + SQLite，接收 Codex 自报事件，并接收管理端提交的 Cursor 自然周快照；同一邮箱和周的 Cursor 重采集替换原快照，避免重复累计。
 - `cursor_weekly.py`：服务器端 Cursor 周采集器，读取服务器私有账号清单，只提交邮箱、按周汇总的 token、模型、日期和可用的来源金额，不保存或返回 Cursor API 密钥。
-- `web/`：中文统一看板，按来源和邮箱展示周用量、模型、趋势、同步状态；姓名和部门可在后续人员表接入后补齐。
+- `web/`：中文统一看板，按来源和邮箱展示周用量、模型、趋势、同步状态；Codex 邮箱对应的姓名和部门由管理员维护在服务端人员名册中，记录不放入源码仓库。
 - `deploy/`：独立 systemd、Nginx HTTPS/ACME 配置和保留数据与凭据的版本安装脚本，见 [远端部署说明](README-deploy.md)。
 
 ## 本地运行

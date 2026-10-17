@@ -47,6 +47,7 @@ python client.py --url http://127.0.0.1:8765 --events reports/events.json --toke
 - `POST /api/enroll`：匿名内部自报注册，严格 JSON 为 email/device_id/registration_key；同一设备注册记录可重试，响应身份级别为 self_reported。公开请求体上限 8 KiB；不验证邮箱所有权。
 - `POST /api/users`：旧手动接入兼容，管理员 Bearer 令牌，JSON 为 `{"email":"user@example.com"}`；201 只返回一次上传令牌，已有邮箱返回 409，不改变旧令牌。
 - `GET /api/users`：管理员查询登记邮箱和设备状态，不返回上传令牌。
+- `GET /api/people`、`PUT /api/people`：管理员读取或完整替换邮箱、姓名、部门映射；`GET /api/users` 也保留原有 `users` 字段并附带 `people`。请求格式和替换注意事项见[人员名册接口说明](docs/person-registry.md)。
 - `POST /api/events`：邮箱专属上传 Bearer 令牌，JSON 为 `{"device_id":"已有设备标识","package":完整采集包}`。可选 email 必须与服务端令牌所属邮箱一致。
 - `GET /api/summary?start=2026-10-09&end=2026-10-17`：管理员查询；可追加 email 筛选，也可使用 `week=周一日期`。
 - `GET /api/export.csv`：管理员导出，筛选参数与 summary 相同。

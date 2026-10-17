@@ -338,6 +338,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS cursor_runs (run_id TEXT PRIMARY KEY, period_start REAL NOT NULL, period_end REAL NOT NULL, captured_at TEXT NOT NULL, captured_epoch REAL NOT NULL, payload_hash TEXT NOT NULL, pagination_complete INTEGER NOT NULL, expected_count INTEGER NOT NULL, success_count INTEGER NOT NULL, failed_count INTEGER NOT NULL, complete INTEGER NOT NULL, applied INTEGER NOT NULL DEFAULT 1);
             CREATE TABLE IF NOT EXISTS cursor_run_accounts (run_id TEXT NOT NULL REFERENCES cursor_runs(run_id), email TEXT NOT NULL, ok INTEGER NOT NULL, shared INTEGER NOT NULL, name TEXT, department TEXT, error_code TEXT, PRIMARY KEY(run_id,email));
             CREATE TABLE IF NOT EXISTS cursor_weekly_accounts (period_start REAL NOT NULL, period_end REAL NOT NULL, email TEXT NOT NULL, shared INTEGER NOT NULL, name TEXT, department TEXT, total_tokens INTEGER NOT NULL, usage_records INTEGER NOT NULL, charged_cents INTEGER, charge_records INTEGER NOT NULL, unpriced_records INTEGER NOT NULL, models TEXT NOT NULL, by_day TEXT NOT NULL, last_success_at TEXT NOT NULL, last_success_epoch REAL NOT NULL, source_run_id TEXT NOT NULL REFERENCES cursor_runs(run_id), PRIMARY KEY(period_start,period_end,email));
+            CREATE TABLE IF NOT EXISTS people_registry (email TEXT PRIMARY KEY, name TEXT NOT NULL, department TEXT NOT NULL, updated_at TEXT NOT NULL);
             ''')
             # Keep upgrades additive for databases created by an earlier unified
             # dashboard release; timestamps compare numerically across ISO forms.
@@ -436,6 +437,41 @@ class Store:
             row['identity_assurance'] = 'self_reported'
             row['devices'] = [{k: v for k, v in d.items() if k != 'email'} for d in devices if d['email'] == row['email']]
         return users
+    def people(self):
+        with self.connect() as conn:
+            return [dict(row) for row in conn.execute(
+                'SELECT email,name,department,updated_at FROM people_registry ORDER BY name,email')]
+    def replace_people(self, body):
+        if not isinstance(body, dict) or set(body) != {'people'}:
+            raise Invalid('people list required')
+        people = body['people']
+        if not isinstance(people, list) or len(people) > 10000:
+            raise Invalid('invalid people list')
+        normalized, emails = [], set()
+        for person in people:
+            if not isinstance(person, dict) or set(person) != {'email', 'name', 'department'}:
+                raise Invalid('invalid person fields')
+            email = normalize_email(person['email'])
+            if email in emails:
+                raise Invalid('duplicate person email')
+            emails.add(email)
+            values = {}
+            for field in ('name', 'department'):
+                value = person[field]
+                if (not isinstance(value, str) or len(value) > 200 or
+                        any(ord(char) < 32 or 127 <= ord(char) < 160 for char in value)):
+                    raise Invalid('invalid person metadata')
+                value = value.strip()
+                if not value:
+                    raise Invalid('empty person metadata')
+                values[field] = value
+            normalized.append({'email': email, **values})
+        stamp = now_iso()
+        with self.connect() as conn:
+            conn.execute('DELETE FROM people_registry')
+            conn.executemany('INSERT INTO people_registry(email,name,department,updated_at) VALUES(?,?,?,?)',
+                             [(row['email'], row['name'], row['department'], stamp) for row in normalized])
+        return {'ok': True, 'count': len(normalized), 'people': self.people()}
     def ingest(self, email, body):
         email = normalize_email(email)
         if not isinstance(body, dict) or set(body) - {'device_id', 'package', 'email'}:
@@ -733,6 +769,8 @@ class Handler(BaseHTTPRequestHandler):
         self.dispatch('GET')
     def do_POST(self):
         self.dispatch('POST')
+    def do_PUT(self):
+        self.dispatch('PUT')
     def read_json(self, maximum):
         if self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length', [])) != 1:
             raise Invalid('one Content-Length required')
@@ -770,14 +808,21 @@ class Handler(BaseHTTPRequestHandler):
             if not role:
                 self.close_connection = True
                 return self.reply(401, {'error': 'unauthorized'})
-            if parsed.path in ('/api/users', '/api/summary', '/api/export.csv', '/api/cursor/summary', '/api/cursor/snapshots') and role != 'admin':
+            if parsed.path in ('/api/users', '/api/people', '/api/summary', '/api/export.csv', '/api/cursor/summary', '/api/cursor/snapshots') and role != 'admin':
                 self.close_connection = True
                 return self.reply(403, {'error': 'admin required'})
             if parsed.path == '/api/events' and role != 'uploader':
                 self.close_connection = True
                 return self.reply(403, {'error': 'uploader token required'})
             if method == 'GET' and parsed.path == '/api/users':
-                return self.reply(200, {'users': self.server.store.users()})
+                return self.reply(200, {'users': self.server.store.users(), 'people': self.server.store.people()})
+            if method == 'GET' and parsed.path == '/api/people':
+                return self.reply(200, {'people': self.server.store.people()})
+            if method == 'PUT' and parsed.path == '/api/people':
+                data = self.read_json(MAX_BODY)
+                if data is None:
+                    return
+                return self.reply(200, self.server.store.replace_people(data))
             if method == 'GET' and parsed.path == '/api/cursor/summary':
                 params = parse_qs(parsed.query, keep_blank_values=True)
                 if any(len(v) != 1 for v in params.values()):
