@@ -1,5 +1,7 @@
 # Codex Usage Reporter
 
+代码托管：[GitHub](https://github.com/spock-wen/codex-usage-reporter) · [Gitee 镜像](https://gitee.com/hihope-aifoundry/codex-usage-reporter)。GitHub 访问不畅时，可按[同事指南](docs/colleague-guide.md#github-访问不畅时使用-gitee)交给 Codex 从 Gitee 安装。
+
 从本地 Codex 日志统计 token 和 API 等值费用，自动读取登录邮箱接入团队服务，在网页查看邮箱、设备、每日和模型分布。当前部署地址：[codex.wenspock.site](https://codex.wenspock.site)。采用**内部自报 · 邮箱未验证**，无需管理员预登记、手填邮箱/上传令牌或邮件验证码；看板查看仍需管理员密钥。
 
 新装且没有配置时默认使用 codex.wenspock.site。旧地址 https://usage.wenspock.site 保留相同接口与数据，已有配置继续使用原地址和凭据，更新 skill 不会静默迁移；旧地址直接处理上报，不依赖重定向。

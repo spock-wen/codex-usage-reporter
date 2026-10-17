@@ -18,12 +18,26 @@ API Key 登录、Codex 未登录或当前账户没有邮箱时，通过 Codex �
 
 安装后的 skill 在下一轮对话可用；如果仍未发现，再重启 Codex 检查实际安装位置。接入和自测可直接使用已记录的绝对脚本路径完成，不依赖当前对话立即发现新 skill。
 
+### GitHub 访问不畅时使用 Gitee
+
+将下面的话交给 Codex，下载、安装和接入仍由它完成：
+
+> 请从 https://gitee.com/hihope-aifoundry/codex-usage-reporter 下载或克隆仓库到工作区，保留已有本地修改，在仓库根执行 python scripts/manage_skill.py install --enroll，自动读取本机 Codex 邮箱并保存接入凭证；新装默认接入 https://codex.wenspock.site，已有安装请备份后安全更新原 skill 目录，保留私人配置、凭据、设备 ID 和原上报地址，不重复安装；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务，完成后做 --no-upload 本地自测。
+
+skill-installer 的 URL 安装方式仅支持 GitHub，不能直接传 Gitee URL；Gitee 路径使用仓库自带的 manage_skill.py。安装器在备份后逐文件原子替换，保留未知文件和私人状态；不要删除原安装目录或强制重置已有工作区。
+
 ## 可选：自行拉取仓库安装
 
 如果希望手动维护源码，可以匿名克隆公开仓库：
 
 ```sh
 git clone https://github.com/spock-wen/codex-usage-reporter.git
+```
+
+GitHub 访问不畅时，改用下面这一条，二选一即可：
+
+```sh
+git clone https://gitee.com/hihope-aifoundry/codex-usage-reporter.git
 ```
 
 进入仓库，执行：
