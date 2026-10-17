@@ -56,17 +56,25 @@ def read_accounts(path):
     accounts = {}
     with open(path, encoding='utf-8-sig', newline='') as stream:
         reader = csv.reader(stream)
-        next(reader, None)
+        header = next(reader, None)
+        required = ('三级部门', '账号', 'key', '使用人')
+        if not header or any(header.count(name) != 1 for name in required):
+            raise ValueError('invalid account CSV header')
+        columns = {name: header.index(name) for name in required}
         for line_no, row in enumerate(reader, 2):
             if not row or not any(part.strip() for part in row):
                 continue
-            if len(row) < 4:
+            if len(row) <= max(columns.values()):
                 raise ValueError(f'invalid account CSV row {line_no}')
-            email, key, label = row[1].strip(), row[2].strip(), row[3].strip()
+            department = row[columns['三级部门']].strip()
+            email = row[columns['账号']].strip()
+            key = row[columns['key']].strip()
+            label = row[columns['使用人']].strip()
             email = normalize_email(email)
             if not key or email in accounts:
                 raise ValueError(f'invalid or duplicate account row {line_no}')
-            accounts[email] = {'email': email, 'key': key, 'shared': '/' in label}
+            accounts[email] = {'email': email, 'key': key, 'shared': '/' in label,
+                               'name': label or None, 'department': department or None}
     if not accounts:
         raise ValueError('account CSV is empty')
     return list(accounts.values())
@@ -110,7 +118,8 @@ def _json_cents(value):
 
 
 def _account_failure(account, reason):
-    return {'email': account['email'], 'ok': False, 'shared': account['shared'], 'error_code': reason}
+    return {'email': account['email'], 'ok': False, 'shared': account['shared'], 'error_code': reason,
+            **{key: account[key] for key in ('name', 'department') if account.get(key)}}
 
 
 def collect_account(account, start, end, sender=post_json):
@@ -194,7 +203,8 @@ def collect_account(account, start, end, sender=post_json):
         aggregate['charged_cents'] = _json_cents(aggregate['charged_cents']) if aggregate['charge_records'] else None
     except (ValueError, OverflowError, ArithmeticError):
         return _account_failure(account, 'amount_out_of_range')
-    return {'email': email, 'ok': True, 'shared': account['shared'], **aggregate,
+    return {'email': email, 'ok': True, 'shared': account['shared'],
+            **{key: account[key] for key in ('name', 'department') if account.get(key)}, **aggregate,
             'models': sorted(aggregate['models'].values(), key=lambda row: (-row['total_tokens'], row['model'])),
             'by_day': sorted(aggregate['by_day'].values(), key=lambda row: row['day'])}
 

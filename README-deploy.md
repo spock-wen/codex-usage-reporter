@@ -18,7 +18,7 @@ Cursor 无需同事安装 skill 或逐人上报。65 服务器继续使用现有
 
 每周一 22:00（Asia/Shanghai）采集刚结束的上周自然周，并通过仅监听回环地址的 Codex 服务管理员接口写入周快照。重复执行会按账号和周覆盖同一份快照，多账号分别保留并在汇总时累加；Cursor 接口没有可确认的稳定请求 ID，所以不把重复的明细事件当作 Codex `response_id` 去重。采集锁避免两个完整任务并行，超过 60 分钟由外层超时终止。
 
-周快照保存邮箱、共享账号标记、每日 token、模型 token、用量记录数量和源端可用的 `chargedCents`。API Key 和访问令牌不会写入快照。账号或分页失败时，失败状态会记录，先前成功的账号周快照保留，整周显示为不完整；不会用失败的零值覆盖旧数据。首采失败的账号会显示“不可用”，数值留空。延迟到达的旧快照只记审计，不会覆盖较新采集或让已移除账号重新出现；同一采集时间的后到快照也会被忽略。Cursor 金额按来源记录单独显示，不与 Codex API 等值估算相加；缺少源金额的 token 记录会标记费用覆盖不完整。当前历史日报只有 MM-DD 的每日 token 和近 30 天模型聚合，不能还原准确的历史周模型分布；看板会从新周采集中逐周积累模型数据。
+账号清单表头为“三级部门、账号、key、使用人”。周快照保存邮箱、使用人显示名、部门、共享账号标记、每日 token、模型 token、用量记录数量和源端可用的 `chargedCents`；名称与部门仅通过管理员鉴权的 Cursor 汇总接口返回，并在管理员看板展示。API Key 和访问令牌不会写入快照或数据库。账号或分页失败时，失败状态会记录，先前成功的账号周快照保留，整周显示为不完整；不会用失败的零值覆盖旧数据。首采失败的账号会显示“不可用”，数值留空。延迟到达的旧快照只记审计，不会覆盖较新采集或让已移除账号重新出现；同一采集时间的后到快照也会被忽略。Cursor 金额按来源记录单独显示，不与 Codex API 等值估算相加；缺少源金额的 token 记录会标记费用覆盖不完整。当前历史日报只有 MM-DD 的每日 token 和近 30 天模型聚合，不能还原准确的历史周模型分布；看板会从新周采集中逐周积累模型数据。
 
 Cursor 源金额按 0.000001 cent 精度校验，以保留 API 实际返回的最多六位小数；为确保 JSON 与浏览器数值可精确往返，单账号与一次周快照的金额合计上限为 `2^32` cents（约 4295 万美元）。跨周或保留旧账号后产生的较大汇总会以最多六位小数的精确十进制字符串返回，token 汇总仍可正常读取。
 
@@ -28,7 +28,7 @@ Cursor 源金额按 0.000001 cent 精度校验，以保留 API 实际返回的�
 
 - 最小服务清单见 [deploy/source-manifest.txt](deploy/source-manifest.txt)：`server.py`、`collector.py`、`cursor_weekly.py`、`prices.json`、看板三文件和 `deploy/cursor-weekly.sh`。服务端直接从 collector 导入 Codex token 定义、时间解析和计价函数；不需要 identity、client、测试、Cursor 账号清单或本机认证文件。
 - 代码存于 `/opt/codex-usage/releases/<版本>`，`current` 指向当前版本。代码 root 所有、服务用户只读。
-- 单独系统用户/组 `codex-usage`，shell 为 `/usr/sbin/nologin`；SQLite 数据在 `/var/lib/codex-usage/usage.sqlite3`，仅服务用户可写。
+- 单独系统用户/组 `codex-usage`，shell 为 `/usr/sbin/nologin`；SQLite 数据在 `/var/lib/codex-usage/usage.sqlite3`，仅服务用户可写。Cursor 周快照与采集审计记录保存在此数据库，账号映射的使用人和部门也会写入其中；代码通过增量 SQLite migration 为旧数据库补列，不要求清库重建。
 - 配置 `/etc/codex-usage/server.json` 为 `root:codex-usage 0640`，内容仅需 `{"admin_key":"至少24字符的随机密钥"}`。安装器只在不存在时生成，不打印、不轮换既有密钥，不备份到源码目录。
 - systemd 开机自启，失败重启，仅监听 `127.0.0.1:18765`；Nginx 在 443 反代根路径，不使用子路径重写。后台数据库和凭据均不在网站静态白名单内。
 

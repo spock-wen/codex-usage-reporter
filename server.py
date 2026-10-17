@@ -177,13 +177,24 @@ def validate_cursor_snapshot(payload):
         if email in emails:
             raise Invalid('duplicate Cursor account')
         emails.add(email)
+        metadata = {}
+        for key in ('name', 'department'):
+            if key not in account or account[key] is None:
+                continue
+            value = account[key]
+            if (not isinstance(value, str) or len(value) > 200 or
+                    any(ord(char) < 32 or 127 <= ord(char) < 160 for char in value)):
+                raise Invalid('invalid Cursor account metadata')
+            value = value.strip()
+            if value:
+                metadata[key] = value
         if not account['ok']:
-            if set(account) != {'email', 'ok', 'shared', 'error_code'} or not isinstance(account['error_code'], str) or not re.fullmatch(r'[a-z_]{1,60}', account['error_code']):
+            if not {'email', 'ok', 'shared', 'error_code'} <= set(account) or set(account) - {'email', 'ok', 'shared', 'error_code', 'name', 'department'} or not isinstance(account['error_code'], str) or not re.fullmatch(r'[a-z_]{1,60}', account['error_code']):
                 raise Invalid('invalid Cursor account failure')
-            accounts.append({'email': email, 'ok': False, 'shared': account['shared'], 'error_code': account['error_code']})
+            accounts.append({'email': email, 'ok': False, 'shared': account['shared'], 'error_code': account['error_code'], **metadata})
             continue
         fields = {'email', 'ok', 'shared', 'usage_records', 'total_tokens', 'charged_cents', 'charge_records', 'unpriced_records', 'models', 'by_day'}
-        if set(account) != fields:
+        if not fields <= set(account) or set(account) - fields - {'name', 'department'}:
             raise Invalid('invalid Cursor account fields')
         counts = {}
         for key in ('usage_records', 'total_tokens', 'charge_records', 'unpriced_records'):
@@ -238,7 +249,7 @@ def validate_cursor_snapshot(payload):
             raise Invalid('Cursor charge totals do not reconcile')
         if counts['charge_records'] + counts['unpriced_records'] != counts['usage_records']:
             raise Invalid('Cursor charge coverage does not reconcile')
-        accounts.append({'email': email, 'ok': True, 'shared': account['shared'], **counts,
+        accounts.append({'email': email, 'ok': True, 'shared': account['shared'], **metadata, **counts,
                          'charged_cents': charged, 'models': models, 'by_day': sorted(days, key=lambda row: row['day'])})
     snapshot_charge_total = sum((Decimal(str(row['charged_cents'])) for row in accounts
                                  if row['ok'] and row['charged_cents'] is not None), Decimal(0))
@@ -325,14 +336,18 @@ class Store:
             CREATE TABLE IF NOT EXISTS batches (id INTEGER PRIMARY KEY, batch_id TEXT NOT NULL, email TEXT NOT NULL REFERENCES users(email), device_id TEXT NOT NULL, period_start REAL NOT NULL, period_end REAL NOT NULL, received_at TEXT NOT NULL, received INTEGER NOT NULL, new_count INTEGER NOT NULL, duplicates INTEGER NOT NULL, conflicts INTEGER NOT NULL, rejected INTEGER NOT NULL DEFAULT 0, is_complete INTEGER NOT NULL, data_status TEXT NOT NULL, quality TEXT NOT NULL, incomplete_reasons TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS batches_period ON batches(period_start,period_end,email);
             CREATE TABLE IF NOT EXISTS cursor_runs (run_id TEXT PRIMARY KEY, period_start REAL NOT NULL, period_end REAL NOT NULL, captured_at TEXT NOT NULL, captured_epoch REAL NOT NULL, payload_hash TEXT NOT NULL, pagination_complete INTEGER NOT NULL, expected_count INTEGER NOT NULL, success_count INTEGER NOT NULL, failed_count INTEGER NOT NULL, complete INTEGER NOT NULL, applied INTEGER NOT NULL DEFAULT 1);
-            CREATE TABLE IF NOT EXISTS cursor_run_accounts (run_id TEXT NOT NULL REFERENCES cursor_runs(run_id), email TEXT NOT NULL, ok INTEGER NOT NULL, shared INTEGER NOT NULL, error_code TEXT, PRIMARY KEY(run_id,email));
-            CREATE TABLE IF NOT EXISTS cursor_weekly_accounts (period_start REAL NOT NULL, period_end REAL NOT NULL, email TEXT NOT NULL, shared INTEGER NOT NULL, total_tokens INTEGER NOT NULL, usage_records INTEGER NOT NULL, charged_cents INTEGER, charge_records INTEGER NOT NULL, unpriced_records INTEGER NOT NULL, models TEXT NOT NULL, by_day TEXT NOT NULL, last_success_at TEXT NOT NULL, last_success_epoch REAL NOT NULL, source_run_id TEXT NOT NULL REFERENCES cursor_runs(run_id), PRIMARY KEY(period_start,period_end,email));
+            CREATE TABLE IF NOT EXISTS cursor_run_accounts (run_id TEXT NOT NULL REFERENCES cursor_runs(run_id), email TEXT NOT NULL, ok INTEGER NOT NULL, shared INTEGER NOT NULL, name TEXT, department TEXT, error_code TEXT, PRIMARY KEY(run_id,email));
+            CREATE TABLE IF NOT EXISTS cursor_weekly_accounts (period_start REAL NOT NULL, period_end REAL NOT NULL, email TEXT NOT NULL, shared INTEGER NOT NULL, name TEXT, department TEXT, total_tokens INTEGER NOT NULL, usage_records INTEGER NOT NULL, charged_cents INTEGER, charge_records INTEGER NOT NULL, unpriced_records INTEGER NOT NULL, models TEXT NOT NULL, by_day TEXT NOT NULL, last_success_at TEXT NOT NULL, last_success_epoch REAL NOT NULL, source_run_id TEXT NOT NULL REFERENCES cursor_runs(run_id), PRIMARY KEY(period_start,period_end,email));
             ''')
             # Keep upgrades additive for databases created by an earlier unified
             # dashboard release; timestamps compare numerically across ISO forms.
             for table, column, definition in (
                 ('cursor_runs', 'captured_epoch', 'REAL NOT NULL DEFAULT 0'),
                 ('cursor_runs', 'applied', 'INTEGER NOT NULL DEFAULT 1'),
+                ('cursor_run_accounts', 'name', 'TEXT'),
+                ('cursor_run_accounts', 'department', 'TEXT'),
+                ('cursor_weekly_accounts', 'name', 'TEXT'),
+                ('cursor_weekly_accounts', 'department', 'TEXT'),
                 ('cursor_weekly_accounts', 'last_success_epoch', 'REAL NOT NULL DEFAULT 0'),
             ):
                 if column not in {row['name'] for row in conn.execute(f'PRAGMA table_info({table})')}:
@@ -533,19 +548,24 @@ class Store:
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (snapshot['run_id'], lo, hi, captured, captured_epoch, digest, int(snapshot['pagination_complete']), len(snapshot['accounts']), len(good), len(bad), int(complete), int(not stale)))
             for account in snapshot['accounts']:
-                conn.execute('INSERT INTO cursor_run_accounts VALUES(?,?,?,?,?)',
-                    (snapshot['run_id'], account['email'], int(account['ok']), int(account['shared']), account.get('error_code')))
+                conn.execute('''INSERT INTO cursor_run_accounts
+                    (run_id,email,ok,shared,name,department,error_code) VALUES(?,?,?,?,?,?,?)''',
+                    (snapshot['run_id'], account['email'], int(account['ok']), int(account['shared']),
+                     account.get('name'), account.get('department'), account.get('error_code')))
             for account in (() if stale else good):
                 conn.execute('''INSERT INTO cursor_weekly_accounts
-                    (period_start,period_end,email,shared,total_tokens,usage_records,charged_cents,charge_records,unpriced_records,models,by_day,last_success_at,last_success_epoch,source_run_id)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    (period_start,period_end,email,shared,name,department,total_tokens,usage_records,charged_cents,charge_records,unpriced_records,models,by_day,last_success_at,last_success_epoch,source_run_id)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(period_start,period_end,email) DO UPDATE SET
-                    shared=excluded.shared,total_tokens=excluded.total_tokens,usage_records=excluded.usage_records,
+                    shared=excluded.shared,name=COALESCE(excluded.name,cursor_weekly_accounts.name),
+                    department=COALESCE(excluded.department,cursor_weekly_accounts.department),
+                    total_tokens=excluded.total_tokens,usage_records=excluded.usage_records,
                     charged_cents=excluded.charged_cents,charge_records=excluded.charge_records,
                     unpriced_records=excluded.unpriced_records,models=excluded.models,by_day=excluded.by_day,
                     last_success_at=excluded.last_success_at,last_success_epoch=excluded.last_success_epoch,source_run_id=excluded.source_run_id
                     WHERE excluded.last_success_epoch > cursor_weekly_accounts.last_success_epoch''',
-                    (lo, hi, account['email'], int(account['shared']), account['total_tokens'], account['usage_records'],
+                    (lo, hi, account['email'], int(account['shared']), account.get('name'), account.get('department'),
+                     account['total_tokens'], account['usage_records'],
                      account['charged_cents'], account['charge_records'], account['unpriced_records'],
                      canonical_json(account['models']), canonical_json(account['by_day']), captured, captured_epoch, snapshot['run_id']))
             # Only an all-account successful run can retire accounts removed from
@@ -569,7 +589,7 @@ class Store:
             conn.execute('BEGIN')
             runs = [dict(row) for row in conn.execute('SELECT rowid AS sequence,* FROM cursor_runs WHERE period_start>=? AND period_end<=? AND applied=1 ORDER BY captured_epoch DESC,sequence DESC', (lower, upper))]
             account_rows = [dict(row) for row in conn.execute('SELECT * FROM cursor_weekly_accounts WHERE period_start>=? AND period_end<=? ORDER BY period_start,email', (lower, upper))]
-            statuses = [dict(row) for row in conn.execute('''SELECT a.run_id,a.email,a.ok,a.shared,a.error_code,r.period_start,r.period_end,r.captured_at
+            statuses = [dict(row) for row in conn.execute('''SELECT a.run_id,a.email,a.ok,a.shared,a.name,a.department,a.error_code,r.period_start,r.period_end,r.captured_at,r.captured_epoch
                 FROM cursor_run_accounts a JOIN cursor_runs r ON r.run_id=a.run_id
                 WHERE r.period_start>=? AND r.period_end<=? AND r.applied=1 ORDER BY r.period_start,r.captured_epoch DESC,r.rowid DESC''', (lower, upper))]
         weeks = int((hi - lo).days / 7)
@@ -585,7 +605,13 @@ class Store:
         models = defaultdict(lambda: {'total_tokens': 0, 'usage_records': 0})
         people = defaultdict(lambda: {'email': '', 'shared': False, 'total_tokens': 0, 'usage_records': 0,
             'charged_cents': Decimal(0), 'has_charges': False, 'charge_complete': True, 'last_success_at': None,
+            'name': None, 'department': None, '_metadata_epoch': -1,
             'models': defaultdict(lambda: {'total_tokens': 0, 'usage_records': 0})})
+        def apply_metadata(person, row, epoch):
+            if epoch >= person['_metadata_epoch'] and (row.get('name') or row.get('department')):
+                person['name'] = row.get('name') or person['name']
+                person['department'] = row.get('department') or person['department']
+                person['_metadata_epoch'] = epoch
         charge_subtotal, charge_missing, total_tokens, total_records = Decimal(0), 0, 0, 0
         user_status = {}
         for row in account_rows:
@@ -593,6 +619,7 @@ class Store:
             person['email'] = row['email']
             person['_has_snapshot'] = True
             person['shared'] = person['shared'] or bool(row['shared'])
+            apply_metadata(person, row, row['last_success_epoch'])
             person['total_tokens'] += row['total_tokens']
             person['usage_records'] += row['usage_records']
             person['last_success_at'] = max(person['last_success_at'] or '', row['last_success_at']) or None
@@ -620,6 +647,7 @@ class Store:
             person = people[email]
             person['email'] = email
             person['shared'] = person['shared'] or bool(status['shared'])
+            apply_metadata(person, status, status['captured_epoch'])
             previous = user_status.get(email)
             if previous is None or week_start > previous['period_start']:
                 user_status[email] = {**status, 'period_start': week_start}
@@ -657,7 +685,7 @@ class Store:
                 'charge_subtotal_cents': cursor_cents_output(charge_subtotal), 'unpriced_records': charge_missing,
                 'charge_complete': summary_charge_complete,
                 'is_complete': all_complete},
-            'by_user': [{'email': person['email'], 'shared': person['shared'], 'available': bool(person.get('_has_snapshot')), 'error_code': user_status.get(person['email'], {}).get('error_code'), 'last_success_at': person['last_success_at'],
+            'by_user': [{'email': person['email'], 'name': person['name'], 'department': person['department'], 'shared': person['shared'], 'available': bool(person.get('_has_snapshot')), 'error_code': user_status.get(person['email'], {}).get('error_code'), 'last_success_at': person['last_success_at'],
                 'totals': {'requests': person['usage_records'] if person.get('_has_snapshot') else None, 'usage_records': person['usage_records'] if person.get('_has_snapshot') else None, 'total_tokens': person['total_tokens'] if person.get('_has_snapshot') else None,
                     'charged_cents': cursor_cents_output(person['charged_cents']) if person_charge_complete(person) else None,
                     'charge_subtotal_cents': cursor_cents_output(person['charged_cents']) if person.get('_has_snapshot') else None,

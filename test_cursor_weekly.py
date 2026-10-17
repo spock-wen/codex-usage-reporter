@@ -1,4 +1,5 @@
 import json
+import csv
 import sqlite3
 import tempfile
 import unittest
@@ -9,11 +10,23 @@ from decimal import Decimal
 from pathlib import Path
 
 from collector import BEIJING
-from cursor_weekly import PAGE_SIZE, NoRedirectHandler, collect_account, validate_local_endpoint, week_bounds
+from cursor_weekly import PAGE_SIZE, NoRedirectHandler, collect_account, read_accounts, validate_local_endpoint, week_bounds
 from server import Invalid, Store, cursor_cents_number, cursor_cents_output, validate_cursor_snapshot
 
 
 class CursorWeeklyTests(unittest.TestCase):
+    def test_account_csv_metadata_is_carried_without_serializing_api_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'accounts.csv'
+            with path.open('w', encoding='utf-8', newline='') as stream:
+                writer = csv.writer(stream)
+                writer.writerow(['三级部门', '账号', 'key', '使用人'])
+                writer.writerow(['研发', 'alpha@example.test', 'synthetic-api-key', '测试成员'])
+            accounts = read_accounts(path)
+        self.assertEqual(accounts, [{'email': 'alpha@example.test', 'key': 'synthetic-api-key',
+            'shared': False, 'name': '测试成员', 'department': '研发'}])
+        self.assertNotIn('synthetic-api-key', json.dumps({k: v for k, v in accounts[0].items() if k != 'key'}))
+
     def test_previous_natural_week_uses_beijing_midnight_bounds(self):
         start, end = week_bounds(datetime(2026, 10, 17, 12, 0, tzinfo=BEIJING))
         self.assertEqual(start.isoformat(), '2026-10-05T00:00:00+08:00')
@@ -31,12 +44,16 @@ class CursorWeeklyTests(unittest.TestCase):
             if '/auth/' in url:
                 return {'accessToken': 'temporary-access-token'}
             return {'usageEventsDisplay': [event] if body['page'] == 1 else []}
-        account = {'email': 'a@example.com', 'key': 'must-not-leak', 'shared': False}
+        account = {'email': 'a@example.com', 'key': 'must-not-leak', 'shared': False,
+                   'name': '测试成员', 'department': '研发'}
         result = collect_account(account, start, end, sender)
         self.assertTrue(result['ok'])
+        self.assertEqual((result['name'], result['department']), ('测试成员', '研发'))
         self.assertEqual(result['total_tokens'], 155)
         self.assertEqual(result['usage_records'], 1)
         self.assertEqual(result['charged_cents'], 12.840812)
+        self.assertNotIn('key', result)
+        self.assertNotIn('must-not-leak', json.dumps(result))
         self.assertEqual(result['models'], [{'model': 'cursor-model', 'total_tokens': 155, 'usage_records': 1}])
         self.assertEqual(result['by_day'][0]['day'], '2026-10-06')
         self.assertTrue(all('must-not-leak' not in json.dumps(call) for call in calls))
@@ -107,13 +124,16 @@ class CursorWeeklyTests(unittest.TestCase):
             store = Store(Path(directory) / 'usage.sqlite3', 'test-admin-key-with-at-least-24-chars')
             start = datetime(2026, 10, 5, tzinfo=BEIJING)
             end = start + timedelta(days=7)
-            payload = self.payload(start, end, [self.account('a@example.com', 100)])
+            first_account = self.account('a@example.com', 100)
+            first_account.update(name='测试成员', department='研发')
+            payload = self.payload(start, end, [first_account])
             first = store.ingest_cursor_snapshot(payload)
             second = store.ingest_cursor_snapshot(payload)
             self.assertEqual(first['replaced_accounts'], 1)
             self.assertTrue(second['repeated'])
             summary = store.cursor_summary(start, end)
             self.assertEqual(summary['totals']['total_tokens'], 100)
+            self.assertEqual((summary['by_user'][0]['name'], summary['by_user'][0]['department']), ('测试成员', '研发'))
 
             rerun = self.payload(start, end, [self.account('a@example.com', 120), self.account('b@example.com', 60)], datetime(2026, 10, 18, tzinfo=BEIJING))
             store.ingest_cursor_snapshot(rerun)
@@ -130,6 +150,9 @@ class CursorWeeklyTests(unittest.TestCase):
             self.assertEqual(summary['quality']['failed_count'], 1)
             self.assertEqual({row['email'] for row in summary['by_user']}, {'a@example.com', 'b@example.com'})
             self.assertEqual(next(row for row in summary['by_user'] if row['email'] == 'b@example.com')['totals']['total_tokens'], 60)
+            self.assertEqual((next(row for row in summary['by_user'] if row['email'] == 'a@example.com')['name'],
+                              next(row for row in summary['by_user'] if row['email'] == 'a@example.com')['department']),
+                             ('测试成员', '研发'))
 
     def test_same_capture_time_late_complete_run_cannot_change_selected_week(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -151,13 +174,14 @@ class CursorWeeklyTests(unittest.TestCase):
             store = Store(Path(directory) / 'usage.sqlite3', 'test-admin-key-with-at-least-24-chars')
             start = datetime(2026, 10, 5, tzinfo=BEIJING)
             end = start + timedelta(days=7)
-            run = self.payload(start, end, [self.failure('failed@example.com')])
+            run = self.payload(start, end, [{**self.failure('failed@example.com'), 'name': '测试成员', 'department': '研发'}])
             store.ingest_cursor_snapshot(run)
             summary = store.cursor_summary(start, end)
             row = summary['by_user'][0]
             self.assertEqual(row['email'], 'failed@example.com')
             self.assertFalse(row['available'])
             self.assertEqual(row['error_code'], 'auth_failed')
+            self.assertEqual((row['name'], row['department']), ('测试成员', '研发'))
             self.assertIsNone(row['totals']['total_tokens'])
 
     def test_existing_cursor_schema_adds_and_backfills_capture_watermarks(self):
@@ -189,10 +213,14 @@ class CursorWeeklyTests(unittest.TestCase):
             conn = sqlite3.connect(path)
             run_epoch, applied = conn.execute('SELECT captured_epoch,applied FROM cursor_runs WHERE run_id=?', ('old-run',)).fetchone()
             account_epoch = conn.execute('SELECT last_success_epoch FROM cursor_weekly_accounts WHERE email=?', ('a@example.com',)).fetchone()[0]
+            run_columns = {row[1] for row in conn.execute('PRAGMA table_info(cursor_run_accounts)')}
+            weekly_columns = {row[1] for row in conn.execute('PRAGMA table_info(cursor_weekly_accounts)')}
             conn.close()
             self.assertAlmostEqual(run_epoch, captured.timestamp())
             self.assertAlmostEqual(account_epoch, captured.timestamp())
             self.assertEqual(applied, 1)
+            self.assertTrue({'name', 'department'} <= run_columns)
+            self.assertTrue({'name', 'department'} <= weekly_columns)
 
     def test_older_complete_retry_cannot_overwrite_or_resurrect_retired_account(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -234,6 +262,27 @@ class CursorWeeklyTests(unittest.TestCase):
         account['charged_cents'] = 12.8408123
         with self.assertRaises(Invalid):
             validate_cursor_snapshot(self.payload(start, end, [account]))
+
+    def test_optional_account_metadata_normalizes_and_legacy_snapshot_shape_stays_supported(self):
+        start = datetime(2026, 10, 5, tzinfo=BEIJING)
+        end = start + timedelta(days=7)
+        account = self.account('a@example.com', 10)
+        account.update(name='  测试成员  ', department='  研发  ')
+        normalized, complete = validate_cursor_snapshot(self.payload(start, end, [account]))
+        self.assertTrue(complete)
+        self.assertEqual((normalized['accounts'][0]['name'], normalized['accounts'][0]['department']), ('测试成员', '研发'))
+        legacy, _ = validate_cursor_snapshot(self.payload(start, end, [self.account('a@example.com', 10)]))
+        self.assertNotIn('name', legacy['accounts'][0])
+        self.assertNotIn('department', legacy['accounts'][0])
+
+    def test_invalid_optional_account_metadata_is_rejected(self):
+        start = datetime(2026, 10, 5, tzinfo=BEIJING)
+        end = start + timedelta(days=7)
+        for invalid in ('x' * 201, 'bad\nname', 42):
+            account = self.account('a@example.com', 10)
+            account['name'] = invalid
+            with self.subTest(value=type(invalid).__name__), self.assertRaises(Invalid):
+                validate_cursor_snapshot(self.payload(start, end, [account]))
 
     def test_cursor_amount_output_rejects_values_above_exact_browser_range(self):
         self.assertEqual(cursor_cents_number(Decimal(2 ** 32)), 2 ** 32)

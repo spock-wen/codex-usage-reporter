@@ -37,6 +37,10 @@ class Element {
 }
 function descendants(root) { return root.children.flatMap(child => [child, ...descendants(child)]); }
 function tagged(root, cls) { return descendants(root).filter(child => child.classList.contains(cls)); }
+function findTable(root) { return descendants(root).find(child => child.tagName === 'table'); }
+function sortHeader(table, index) { table.children[0].children[0].children[index].children[0].click(); }
+function tableBody(table) { return table.children[1].children; }
+function headerLabels(table) { return table.children[0].children[0].children.map(cell => cell.textContent.replace(/[↕↑↓]/g, '').trim()); }
 function attributes(text) { return Object.fromEntries([...text.matchAll(/([\w-]+)="([^"]*)"/g)].map(match => [match[1], match[2]])); }
 function decode(text) { return text.replace(/<[^>]*>/g, '').replaceAll('&amp;', '&'); }
 function dom() {
@@ -120,7 +124,7 @@ test('all five navigation pages remain reachable without inventing data', () => 
   }
   assert.equal(ui.calls.length, 0);
   assert.doesNotMatch(ui.elements.get('overview-stats').textContent, /120\.0M|36\.0M/);
-  assert.match(ui.elements.get('people-content').textContent, /名册接口尚未接入/);
+  assert.match(ui.elements.get('people-content').textContent, /人员名册尚未接入/);
 });
 
 test('this-week chooses a whole natural week, while rolling calendar-day range never calls Cursor with invalid bounds', async () => {
@@ -154,6 +158,75 @@ test('source selection changes visible tokens without mixing fees or request def
   assert.doesNotMatch(ui.elements.get('ranking-table').textContent, /codex@example/);
   ui.click('source', 'codex'); await flush(); assert.equal(value(), '100');
   assert.doesNotMatch(ui.elements.get('ranking-table').textContent, /cursor@example/);
+});
+
+test('overview ranking sorts by text and underlying Token values, with accessible direction state', async () => {
+  const rows = [
+    { email: 'zulu@example.invalid', submitted: true, totals: totals(1200000), devices: [] },
+    { email: 'beta@example.invalid', submitted: true, totals: totals(950000), devices: [] },
+    { email: 'alpha@example.invalid', submitted: true, totals: totals(25), devices: [] },
+  ];
+  const people = [
+    { id: 'z', name: 'Zulu', department: '研发', emails: [rows[0].email] },
+    { id: 'b', name: 'Beta', department: '研发', emails: [rows[1].email] },
+    { id: 'a', name: 'Alpha', department: '产品', emails: [rows[2].email] },
+  ];
+  const ui = boot({ login: true, people, codexData: codex(rows), cursorData: cursor([]) }); await flush();
+  const table = findTable(ui.elements.get('ranking-table'));
+  const names = () => tableBody(table).map(row => row.children[0].textContent);
+  assert.deepEqual(names(), ['Zulu', 'Beta', 'Alpha']); // keep the business default before interaction
+  assert.deepEqual(headerLabels(table).slice(0, 2), ['姓名 / 邮箱', '部门']);
+  assert.equal(table.children[0].children[0].children[0].attributes['aria-sort'], 'none');
+  sortHeader(table, 0);
+  assert.deepEqual(names(), ['Alpha', 'Beta', 'Zulu']);
+  assert.equal(table.children[0].children[0].children[0].attributes['aria-sort'], 'ascending');
+  sortHeader(table, 4); // 25, 950K, 1.2M must compare as numbers, not formatted text.
+  assert.deepEqual(names(), ['Zulu', 'Beta', 'Alpha']);
+  sortHeader(table, 4);
+  assert.deepEqual(names(), ['Alpha', 'Beta', 'Zulu']);
+  assert.equal(table.children[0].children[0].children[4].attributes['aria-sort'], 'ascending');
+});
+
+test('Cursor account-list name and department enrich the matching Codex email without splitting usage', async () => {
+  const address = 'mapped@example.invalid';
+  const codexRow = { email: address, submitted: true, totals: totals(100), devices: [] };
+  const cursorRow = { email: address, name: 'Cursor成员', department: '研发一部', available: true,
+    totals: totals(50, { usage_records: 2, charged_cents: 500, charge_complete: true }), models: [] };
+  const ui = boot({ login: true, codexData: codex([codexRow]), cursorData: cursor([cursorRow]) });
+  await flush();
+  const table = findTable(ui.elements.get('ranking-table'));
+  assert.equal(tableBody(table).length, 1);
+  assert.deepEqual(tableBody(table)[0].children.slice(0, 5).map(cell => cell.textContent), ['Cursor成员', '研发一部', '100', '50', '150']);
+  assert.match(ui.elements.get('share-title').textContent, /Cursor姓名映射/);
+  assert.match(ui.elements.get('overview-stats').textContent, /有用量姓名映射1/);
+  ui.click('page', 'members'); await flush();
+  assert.match(ui.elements.get('member-list-note').textContent, /Cursor账号清单提供姓名\/部门映射/);
+  assert.match(ui.elements.get('member-detail').textContent, /Cursor账号清单映射（邮箱未验证）/);
+  ui.click('page', 'people');
+  const peopleTable = findTable(ui.elements.get('people-content'));
+  assert.equal(tableBody(peopleTable).length, 2);
+  assert.ok(tableBody(peopleTable).every(row => row.children[0].textContent === 'Cursor成员' && row.children[1].textContent === '研发一部'));
+  assert.ok(tableBody(peopleTable).every(row => /Cursor账号清单映射/.test(row.children[4].textContent)));
+});
+
+test('explicit people registry name and department take precedence over Cursor account metadata', async () => {
+  const address = 'same@example.invalid';
+  const person = { id: 'directory-person', name: '名册姓名', department: '名册部门', emails: [address] };
+  const cursorRow = { email: address, name: 'Cursor姓名', department: 'Cursor部门', available: true,
+    totals: totals(30, { usage_records: 1, charged_cents: 100, charge_complete: true }), models: [] };
+  const ui = boot({ login: true, people: [person],
+    codexData: codex([{ email: address, submitted: true, totals: totals(20), devices: [] }]),
+    cursorData: cursor([cursorRow]) });
+  await flush();
+  const table = findTable(ui.elements.get('ranking-table'));
+  assert.equal(tableBody(table).length, 1);
+  assert.equal(tableBody(table)[0].children[0].textContent, '名册姓名');
+  assert.equal(tableBody(table)[0].children[1].textContent, '名册部门');
+  ui.click('page', 'people');
+  const peopleTable = findTable(ui.elements.get('people-content'));
+  assert.ok(tableBody(peopleTable).every(row => row.children[0].textContent === '名册姓名'));
+  assert.ok(tableBody(peopleTable).every(row => row.children[1].textContent === '名册部门'));
+  assert.ok(tableBody(peopleTable).every(row => /人员名册映射/.test(row.children[4].textContent)));
 });
 
 test('a missing source leaves the other usable instead of inventing zero data', async () => {
@@ -190,13 +263,56 @@ test('Top 10 and Other use a fixed team denominator and separate remaining, unma
   assert.equal(shareRows.length, 11); assert.match(shareRows.at(-1).textContent, /Other6030%/);
   assert.equal(tagged(ui.elements.get('share-chart'), 'donut-center')[0].textContent, '200Token');
   const groups = tagged(ui.elements.get('other-breakdown'), 'other-group');
-  assert.match(groups[0].textContent, /其余已关联成员 · 1.*10/);
+  assert.match(groups[0].textContent, /其余人员名册映射账号 · 1.*10/);
   assert.match(groups[1].textContent, /未关联账号 · 1.*30/);
   assert.match(groups[2].textContent, /共享账号 · 1.*20/);
   assert.match(ui.elements.get('ranking-table').textContent, /成员1/);
   ui.change('member-filter', '成员1', 'input');
   assert.equal(tagged(ui.elements.get('share-chart'), 'donut-center')[0].textContent, '200Token');
   assert.match(ui.elements.get('share-scope').textContent, /不改变分母/);
+});
+
+test('member sidebar exposes accessible name, department, and Token sort controls', async () => {
+  const rows = [
+    { email: 'zulu@example.invalid', submitted: true, totals: totals(100), devices: [] },
+    { email: 'alpha@example.invalid', submitted: true, totals: totals(20), devices: [] },
+  ];
+  const people = [
+    { id: 'z', name: 'Zulu', department: '研发', emails: [rows[0].email] },
+    { id: 'a', name: 'Alpha', department: '产品', emails: [rows[1].email] },
+  ];
+  const ui = boot({ login: true, people, codexData: codex(rows), cursorData: cursor([]) }); await flush();
+  ui.click('page', 'members'); await flush();
+  const list = ui.elements.get('member-list');
+  const items = () => list.children.filter(child => child.classList.contains('member-item')).map(item => item.children[0].textContent);
+  assert.deepEqual(items(), ['Zulu', 'Alpha']);
+  const sortButtons = tagged(list, 'text-button');
+  assert.equal(sortButtons.length, 3);
+  assert.equal(sortButtons[0].attributes['aria-pressed'], 'false');
+  sortButtons[0].click();
+  assert.deepEqual(items(), ['Alpha', 'Zulu']);
+  const refreshed = tagged(list, 'text-button');
+  refreshed.find(button => button.textContent.startsWith('Token')).click();
+  assert.deepEqual(items(), ['Zulu', 'Alpha']);
+});
+
+test('weekly user summary table sorts its eight-week totals', async () => {
+  const rows = [
+    { email: 'big@example.invalid', submitted: true, totals: totals(1000), devices: [] },
+    { email: 'small@example.invalid', submitted: true, totals: totals(20), devices: [] },
+  ];
+  const ui = boot({ login: true, codexData: codex(rows), cursorData: cursor([]) }); await flush();
+  ui.click('page', 'weekly');
+  for (let attempt = 0; attempt < 6; attempt++) await flush();
+  const table = findTable(ui.elements.get('weekly-share'));
+  assert.ok(table, 'weekly page should expose a sortable user summary');
+  assert.deepEqual(headerLabels(table), ['姓名 / 邮箱', '部门', '8 周观测 Token', '最近周 Token', '覆盖情况']);
+  const names = () => tableBody(table).map(row => row.children[0].textContent);
+  assert.deepEqual(names(), ['big@example.invalid', 'small@example.invalid']);
+  sortHeader(table, 2);
+  assert.deepEqual(names(), ['big@example.invalid', 'small@example.invalid']);
+  sortHeader(table, 2);
+  assert.deepEqual(names(), ['small@example.invalid', 'big@example.invalid']);
 });
 
 test('source cost subtotals preserve incomplete charge state instead of pretending to be a complete bill', async () => {
@@ -247,8 +363,9 @@ test('Cursor sync records use actual captured snapshot contract rather than inve
   assert.match(content.textContent, /最近成功快照的采集时间/);
   assert.doesNotMatch(content.textContent, /任务成功完成时间|执行成功|开始时间|结束时间|状态未提供/);
   const tableElement = descendants(content).find(element => element.tagName === 'table');
-  assert.equal(tableElement.querySelector('thead').textContent, '采集时间报告自然周（不含结束）快照状态成功账号失败账号');
-  const rows = tableElement.querySelector('tbody').children;
+  assert.deepEqual(headerLabels(tableElement), ['采集时间', '报告自然周（不含结束）', '快照状态', '成功账号', '失败账号']);
+  assert.equal(tableElement.children[0].children[0].children[0].attributes['aria-sort'], 'none');
+  let rows = tableBody(tableElement);
   assert.equal(rows.length, 2);
   assert.match(rows[0].children[0].textContent, /10.12.*10:45/);
   assert.equal(rows[0].children[1].textContent, START + ' → ' + END);
@@ -256,6 +373,65 @@ test('Cursor sync records use actual captured snapshot contract rather than inve
   assert.deepEqual(rows[0].children.slice(3).map(element => element.textContent), ['27', '1']);
   assert.equal(rows[1].children[2].textContent, '完整快照');
   assert.deepEqual(rows[1].children.slice(3).map(element => element.textContent), ['28', '0']);
+  sortHeader(tableElement, 0);
+  rows = tableBody(tableElement);
+  assert.match(rows[0].children[0].textContent, /10.12.*11:20/); // underlying timestamps, newest first
+  assert.equal(tableElement.children[0].children[0].children[0].attributes['aria-sort'], 'descending');
+  sortHeader(tableElement, 0);
+  assert.match(tableBody(tableElement)[0].children[0].textContent, /10.12.*10:45/);
+  assert.equal(tableElement.children[0].children[0].children[0].attributes['aria-sort'], 'ascending');
+});
+
+test('Codex sync table sorts new-response counts numerically', async () => {
+  const batches = [
+    { received_at: '2026-10-12T10:00:00+08:00', email: 'first@example.invalid', device_id: 'device-a', period_start: START, period_end: END, received: 10, new: 2, duplicates: 8, conflicts: 0, is_complete: true },
+    { received_at: '2026-10-12T11:00:00+08:00', email: 'second@example.invalid', device_id: 'device-b', period_start: START, period_end: END, received: 10, new: 10, duplicates: 0, conflicts: 0, is_complete: true },
+  ];
+  const ui = boot({ login: true, codexData: codex([], { batches }), cursorData: cursor([]) }); await flush();
+  ui.click('page', 'sync');
+  const syncTable = findTable(ui.elements.get('sync-content'));
+  assert.ok(syncTable);
+  assert.equal(tableBody(syncTable)[0].children[1].textContent, 'first@example.invalid');
+  sortHeader(syncTable, 5);
+  assert.equal(tableBody(syncTable)[0].children[1].textContent, 'second@example.invalid');
+  assert.equal(syncTable.children[0].children[0].children[5].attributes['aria-sort'], 'descending');
+});
+
+test('people table sorts account text while leaving its original order intact until clicked', async () => {
+  const rows = [
+    { email: 'zulu@example.invalid', submitted: true, totals: totals(20), devices: [] },
+    { email: 'alpha@example.invalid', submitted: true, totals: totals(10), devices: [] },
+  ];
+  const ui = boot({ login: true, codexData: codex(rows), cursorData: cursor([]) }); await flush();
+  ui.click('page', 'people');
+  const table = findTable(ui.elements.get('people-content'));
+  const emails = () => tableBody(table).map(row => row.children[3].textContent);
+  assert.deepEqual(emails(), ['zulu@example.invalid', 'alpha@example.invalid']);
+  sortHeader(table, 3);
+  assert.deepEqual(emails(), ['alpha@example.invalid', 'zulu@example.invalid']);
+  assert.equal(table.children[0].children[0].children[3].attributes['aria-sort'], 'ascending');
+});
+
+test('member model table sorts currency using numeric amounts rather than formatted strings', async () => {
+  const account = { email: 'billing@example.invalid', available: true,
+    totals: totals(100, { usage_records: 2, charged_cents: 1460, charge_complete: true }),
+    models: [
+      { model: 'model-small', usage_records: 1, input_tokens: 20, total_tokens: 50, charged_cents: 420 },
+      { model: 'model-large', usage_records: 1, input_tokens: 30, total_tokens: 50, charged_cents: 1010 },
+    ] };
+  const ui = boot({ login: true, codexData: codex([]), cursorData: cursor([account], { totals: account.totals }) }); await flush();
+  ui.click('source', 'cursor'); await flush(); ui.click('page', 'members'); await flush();
+  const tables = descendants(ui.elements.get('member-detail')).filter(element => element.tagName === 'table');
+  assert.equal(tables.length, 2, ui.elements.get('member-detail').textContent);
+  const modelTable = tables.find(table => headerLabels(table).includes('来源费用小计'));
+  const models = () => tableBody(modelTable).map(row => row.children[1].textContent);
+  assert.equal(modelTable.children[0].children[0].children.length, 8, headerLabels(modelTable).join('|'));
+  sortHeader(modelTable, 7);
+  assert.deepEqual(models(), ['model-large', 'model-small']);
+  assert.equal(tableBody(modelTable)[0].children[7].textContent, '$10.10');
+  sortHeader(modelTable, 7);
+  assert.deepEqual(models(), ['model-small', 'model-large']);
+  assert.equal(modelTable.children[0].children[0].children[7].attributes['aria-sort'], 'ascending');
 });
 
 test('Cursor member detail preserves known charge subtotal when total charge is incomplete', async () => {
