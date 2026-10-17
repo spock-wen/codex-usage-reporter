@@ -29,8 +29,11 @@ DEVICE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$')
 MODEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$')
 EVENT_FIELDS = {'event_id', 'timestamp', 'model', 'total_tokens', *TOKEN_FIELDS}
 COUNT_FIELDS = ('requests', *TOKEN_FIELDS, 'total_tokens')
-MAX_CURSOR_CENTS = Decimal(2 ** 36)
-CURSOR_CENTS_QUANTUM = Decimal('0.0001')
+# Cursor may return six decimal places in a cent-denominated field. Keep input
+# values within a range where every one-millionth-cent step is distinguishable
+# in a JavaScript number used by the dashboard.
+MAX_CURSOR_CENTS = Decimal(2 ** 32)
+CURSOR_CENTS_QUANTUM = Decimal('0.000001')
 
 class Invalid(ValueError):
     pass
@@ -193,7 +196,7 @@ def validate_cursor_snapshot(payload):
             if type(charged) not in (int, float):
                 raise Invalid('invalid Cursor charged amount')
             amount = Decimal(str(charged))
-            if not amount.is_finite() or amount < 0 or amount > MAX_CURSOR_CENTS or (amount * 10000) != (amount * 10000).to_integral_value():
+            if not amount.is_finite() or amount < 0 or amount > MAX_CURSOR_CENTS or (amount * 1000000) != (amount * 1000000).to_integral_value():
                 raise Invalid('invalid Cursor charged amount')
             try:
                 charged = cursor_cents_number(amount)
@@ -251,27 +254,27 @@ def validate_cursor_snapshot(payload):
 def cursor_cents_number(value):
     amount = value if isinstance(value, Decimal) else Decimal(str(value))
     if (not amount.is_finite() or amount < 0 or amount > MAX_CURSOR_CENTS or
-            (amount * 10000) != (amount * 10000).to_integral_value()):
+            (amount * 1000000) != (amount * 1000000).to_integral_value()):
         raise ValueError('Cursor amount outside supported precision range')
     if amount == amount.to_integral_value():
         return int(amount)
     number = float(amount.quantize(CURSOR_CENTS_QUANTUM))
     if Decimal(str(number)) != amount:
-        raise ValueError('Cursor amount cannot round-trip at 0.0001-cent precision')
+        raise ValueError('Cursor amount cannot round-trip at 0.000001-cent precision')
     return number
 
 
 def cursor_cents_output(value):
     amount = value if isinstance(value, Decimal) else Decimal(str(value))
     if (not amount.is_finite() or amount < 0 or
-            (amount * 10000) != (amount * 10000).to_integral_value()):
+            (amount * 1000000) != (amount * 1000000).to_integral_value()):
         raise ValueError('invalid Cursor amount for summary')
     if amount <= MAX_CURSOR_CENTS:
         return cursor_cents_number(amount)
     if amount == amount.to_integral_value():
         integer = int(amount)
         return integer if integer <= 2 ** 53 - 1 else str(integer)
-    # A wide aggregate may no longer fit a JSON/browser float at 0.0001-cent
+    # A wide aggregate may no longer fit a JSON/browser float at 0.000001-cent
     # precision. Keep the exact decimal text so a charge never breaks token data.
     return format(amount.quantize(CURSOR_CENTS_QUANTUM), 'f')
 

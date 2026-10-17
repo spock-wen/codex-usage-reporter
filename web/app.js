@@ -11,7 +11,7 @@ function num(v){return finite(v)?v:0;}
 function count(v){return finite(v)?fmt.format(v):"—";}
 function compact(v){if(!finite(v))return"—";for(const[b,s]of[[1e9,"B"],[1e6,"M"],[1e3,"K"]])if(v>=b)return(v/b).toLocaleString("en-US",{maximumFractionDigits:v/b<10?2:1})+s;return count(v);}
 function amount(v){return finite(v)?"$"+money.format(v):"未提供";}
-function cursorCents(v){if(finite(v))return v;if(typeof v!=="string"||!/^(?:0|[1-9]\d*)(?:\.\d{1,4})?$/.test(v))return null;const n=Number(v);return finite(n)?n:null;}
+function cursorCents(v){if(finite(v))return v;if(typeof v!=="string"||!/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(v))return null;const n=Number(v);return finite(n)?n:null;}
 function percent(v,d){return d>0?(100*v/d).toLocaleString("zh-CN",{maximumFractionDigits:1})+"%":"—";}
 function color(key){let h=0;for(const c of String(key))h=(h*31+c.codePointAt(0))>>>0;return`hsl(${h%360} 65% 56%)`;}
 function dateTime(v){if(!v)return"未提供";const d=new Date(v);return Number.isFinite(d.getTime())?new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).format(d):"未提供";}

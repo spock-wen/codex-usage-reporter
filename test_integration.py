@@ -165,7 +165,7 @@ class HttpIntegrationTests(unittest.TestCase):
     def test_cursor_snapshot_endpoint_is_admin_only_and_idempotent(self):
         start, end = "2026-10-05T00:00:00+08:00", "2026-10-12T00:00:00+08:00"
         row = {"email": "cursor-alpha@example.test", "ok": True, "shared": False,
-               "usage_records": 1, "total_tokens": 321, "charged_cents": 12.8408,
+               "usage_records": 1, "total_tokens": 321, "charged_cents": 12.840812,
                "charge_records": 1, "unpriced_records": 0,
                "models": [{"model": "cursor-model", "total_tokens": 321, "usage_records": 1}],
                "by_day": [{"day": "2026-10-06", "total_tokens": 321, "usage_records": 1}]}
@@ -183,7 +183,7 @@ class HttpIntegrationTests(unittest.TestCase):
         status, summary = self.http("GET", "/api/cursor/summary?start=2026-10-05&end=2026-10-12", self.admin)
         self.assertEqual(status, 200)
         self.assertEqual(summary["totals"]["total_tokens"], 321)
-        self.assertEqual(summary["totals"]["charged_cents"], 12.8408)
+        self.assertEqual(summary["totals"]["charged_cents"], 12.840812)
 
     def test_two_devices_union_for_same_email(self):
         token = self.user(EMAIL_A)

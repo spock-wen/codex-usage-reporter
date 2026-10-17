@@ -95,7 +95,7 @@ def _source_cents(value):
         return None
     if not amount.is_finite() or amount < 0 or amount > MAX_CURSOR_CENTS:
         return None
-    scaled = amount * 10000
+    scaled = amount * 1_000_000
     if scaled != scaled.to_integral_value():
         return None
     try:
@@ -131,7 +131,9 @@ def collect_account(account, start, end, sender=post_json):
         while page <= MAX_PAGES:
             response = sender(BASE + '/aiserver.v1.DashboardService/GetFilteredUsageEvents', headers,
                 {'page': page, 'pageSize': PAGE_SIZE, 'startDate': str(int(start.timestamp() * 1000))})
-            events = response.get('usageEventsDisplay')
+            # Cursor's protobuf JSON omits default-valued fields. An empty
+            # response object therefore represents a valid empty event page.
+            events = [] if response == {} else response.get('usageEventsDisplay')
             if not isinstance(events, list):
                 return _account_failure(account, 'invalid_response')
             if not events:

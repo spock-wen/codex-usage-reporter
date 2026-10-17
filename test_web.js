@@ -260,7 +260,7 @@ test('Cursor sync records use actual captured snapshot contract rather than inve
 
 test('Cursor member detail preserves known charge subtotal when total charge is incomplete', async () => {
   const row = { email: 'subtotal@example.invalid', available: true,
-    totals: totals(50, { usage_records: 2, charged_cents: null, charge_subtotal_cents: '420.0001', charge_complete: false, is_complete: false }), models: [] };
+    totals: totals(50, { usage_records: 2, charged_cents: null, charge_subtotal_cents: '420.000001', charge_complete: false, is_complete: false }), models: [] };
   const ui = boot({ login: true, cursorData: cursor([row], { totals: row.totals }) });
   await flush(); ui.click('source', 'cursor'); ui.click('page', 'members'); await flush();
   assert.match(ui.elements.get('source-cards').children[1].textContent, /\$4\.20/);
