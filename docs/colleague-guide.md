@@ -10,7 +10,25 @@
 
 > 请用 skill-installer 安装 https://github.com/spock-wen/codex-usage-reporter/tree/main/skills/codex-usage ，安装后运行该 skill 的 scripts/enrollment.py，自动读取本机 Codex 邮箱接入 https://codex.wenspock.site 并保存凭证；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务；已有安装请安全更新并保留私人配置和原上报地址。
 
-你只需发送这段话，下载 skill、查找 Python 3.10+、执行接入和本地自测都由 Codex 完成，无需本人拉仓库或手动运行命令。公开目录可直接下载，不要求先登录 GitHub。若环境确实缺少可用 Python，Codex 应说明缺少的运行条件，不能声称安装自测完成。
+## 安装完成后，每周上报
+
+安装接入与上报是两步。安装成功后，在每台需要统计的机器上把下面这段话发给 Codex：
+
+> 使用 $codex-usage 采集并上报上周自然周的 Codex 用量到已配置的团队服务，保存本地报告，并告诉我起止时间、token 用量及新增、重复、冲突数量。
+
+建议每周一执行；本周其他日期执行也覆盖同一个上周。last-week 固定按北京时间：上周一 00:00 至本周一 00:00，不含结束时刻。例如 2026-10-19（周一）执行覆盖 2026-10-12 00:00 至 2026-10-19 00:00，此处仅为日期示例。不要用滚动七天的 last7 替代自然周周报。
+
+每台机器各自上报，同邮箱的独立请求累加，同一请求重复上传只计算一次。安装不会自行上报或定时运行；需要每周自动化时，由每位成员在本人机器另行明确配置。需要脚本命令时见[直接运行上报脚本](#可选直接运行上报脚本)。
+
+## 可选：安装并立即上报上周
+
+如果希望一次完成安装和首次上报，把下面整段转发给同事。**选择这段才同时授权上传**，前面的安装话术仍只接入：
+
+> 请从 https://gitee.com/hihope-aifoundry/codex-usage-reporter 下载或克隆仓库到工作区，保留已有修改，执行仓库根的 python scripts/manage_skill.py install --enroll 安装并自动接入；新装默认 https://codex.wenspock.site，已有安装保留私人配置和原上报地址。然后使用实际安装的 codex-usage skill 立即采集并上报上周自然周用量（last-week），保存本地报告，反馈起止时间、token 用量及新增、重复、冲突数量；不创建定时任务。
+
+## 安装检查与备选方式
+
+你只需发送前面的安装话术，下载 skill、查找 Python 3.10+、执行接入和本地自测都由 Codex 完成，无需本人拉仓库或手动运行命令。公开目录可直接下载，不要求先登录 GitHub。若环境确实缺少可用 Python，Codex 应说明缺少的运行条件，不能声称安装自测完成。
 
 API Key 登录、Codex 未登录或当前账户没有邮箱时，通过 Codex 正常流程登录已有账户后重试，不从系统用户名猜邮箱。安装接入只提交邮箱和本设备注册信息，不上传历史用量；本地自测的 --no-upload 也不联网。
 
@@ -70,13 +88,9 @@ python "$SKILL_DIR/scripts/report.py" run --period last7 --no-upload --output-di
 
 需要单独执行自动接入时可运行 `python "$SKILL_DIR/scripts/enrollment.py"`（PowerShell 用 `python (Join-Path $SkillDir 'scripts/enrollment.py')`）。它只读取当前 Codex 登录邮箱并注册，不需要手填邮箱或令牌。
 
-## 每周一上报上周
+## 可选：直接运行上报脚本
 
-每台需要统计的机器在周一向 Codex 明确发送：
-
-> 使用 $codex-usage 采集并上报上周自然周的 Codex 用量到团队服务，保存本地报告，并告诉我时间范围及新增、重复、冲突数量。
-
-也可直接执行：
+使用安装器返回的实际 skill 目录，也可直接执行：
 
 ```sh
 python "$SKILL_DIR/scripts/report.py" run --period last-week --output-dir ./reports/weekly
@@ -87,10 +101,6 @@ PowerShell 使用：
 ```powershell
 python (Join-Path $SkillDir 'scripts/report.py') run --period last-week --output-dir './reports/weekly'
 ```
-
-last-week 固定按北京时间：上周一 00:00 至本周一 00:00，不含结束时刻。例如 2026-10-19（周一）覆盖 2026-10-12 00:00 至 2026-10-19 00:00，只是日期示例。last7 是执行时刻向前七天，不替代自然周周报。
-
-这是每周一**手动执行**的流程。skill 不会自行每周运行；需要自动化时，由每位成员在本人机器另行明确配置，本次不安装计划任务。
 
 ## 多机、重试和补报
 

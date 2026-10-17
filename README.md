@@ -10,7 +10,17 @@
 
 > 请用 skill-installer 安装 https://github.com/spock-wen/codex-usage-reporter/tree/main/skills/codex-usage ，安装后运行该 skill 的 scripts/enrollment.py，自动读取本机 Codex 邮箱接入 https://codex.wenspock.site 并保存凭证；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务；已有安装请安全更新并保留私人配置和原上报地址。
 
-仓库按 [MIT 许可证](LICENSE) 开源。需已正常登录 Codex，并有可运行的 Python 3.10+；脚本和安装操作由 Codex 执行。每周一再明确要求 `$codex-usage` 上报上周，详见 [安装与每周一上报指南](docs/colleague-guide.md)。自包含 skill 位于 [skills/codex-usage](skills/codex-usage/SKILL.md)，安装接入不会自动上传历史用量或创建定时任务。
+**安装完成后，每周上报时再把这段话贴到 Codex：**
+
+> 使用 $codex-usage 采集并上报上周自然周的 Codex 用量到已配置的团队服务，保存本地报告，并告诉我起止时间、token 用量及新增、重复、冲突数量。
+
+建议每周一执行；本周其他日期执行也覆盖同一个上周，即北京时间上周一 00:00 至本周一 00:00，不含结束时刻，使用 last-week，不用滚动七天的 last7。每台机器各自上报，同一请求重复上传只计算一次。安装只完成接入，不会自行上报或定时运行。
+
+**也可以选择安装后立即上报上周，整段转发给同事即可（这段明确授权上传）：**
+
+> 请从 https://gitee.com/hihope-aifoundry/codex-usage-reporter 下载或克隆仓库到工作区，保留已有修改，执行仓库根的 python scripts/manage_skill.py install --enroll 安装并自动接入；新装默认 https://codex.wenspock.site，已有安装保留私人配置和原上报地址。然后使用实际安装的 codex-usage skill 立即采集并上报上周自然周用量（last-week），保存本地报告，反馈起止时间、token 用量及新增、重复、冲突数量；不创建定时任务。
+
+仓库按 [MIT 许可证](LICENSE) 开源。需已正常登录 Codex，并有可运行的 Python 3.10+；脚本和安装操作由 Codex 执行。详见 [安装与每周上报指南](docs/colleague-guide.md)。自包含 skill 位于 [skills/codex-usage](skills/codex-usage/SKILL.md)。
 
 ## 组成
 
