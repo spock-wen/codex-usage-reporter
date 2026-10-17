@@ -11,6 +11,7 @@ import argparse
 import concurrent.futures
 import csv
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 import ipaddress
 import json
 import os
@@ -24,13 +25,15 @@ from urllib.parse import urlsplit
 import uuid
 
 from collector import BEIJING, parse_time
-from server import Invalid, normalize_email, validate_cursor_snapshot
+from server import (Invalid, MAX_CURSOR_CENTS, cursor_cents_number, normalize_email,
+                    validate_cursor_snapshot)
 
 BASE = 'https://api2.cursor.sh'
 PAGE_SIZE = 500
 MAX_PAGES = 200
 HTTP_TIMEOUT = 45
 MODEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$')
+TIMESTAMP_MS = re.compile(r'^[0-9]{1,15}$')
 
 
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -83,6 +86,29 @@ def _nonnegative_integer(value):
     return type(value) is int and 0 <= value <= 10**15
 
 
+def _source_cents(value):
+    if type(value) not in (int, float):
+        return None
+    try:
+        amount = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    if not amount.is_finite() or amount < 0 or amount > MAX_CURSOR_CENTS:
+        return None
+    scaled = amount * 10000
+    if scaled != scaled.to_integral_value():
+        return None
+    try:
+        cursor_cents_number(amount)
+    except (ValueError, OverflowError, ArithmeticError):
+        return None
+    return amount
+
+
+def _json_cents(value):
+    return cursor_cents_number(value)
+
+
 def _account_failure(account, reason):
     return {'email': account['email'], 'ok': False, 'shared': account['shared'], 'error_code': reason}
 
@@ -98,7 +124,7 @@ def collect_account(account, start, end, sender=post_json):
     if not isinstance(token, str) or not token or len(token) > 8192:
         return _account_failure(account, 'auth_failed')
     headers = {'Authorization': 'Bearer ' + token, 'Connect-Protocol-Version': '1'}
-    aggregate = {'usage_records': 0, 'total_tokens': 0, 'charged_cents': 0, 'charge_records': 0,
+    aggregate = {'usage_records': 0, 'total_tokens': 0, 'charged_cents': Decimal(0), 'charge_records': 0,
                  'unpriced_records': 0, 'models': {}, 'by_day': {}}
     page = 1
     try:
@@ -114,7 +140,9 @@ def collect_account(account, start, end, sender=post_json):
                 if not isinstance(event, dict):
                     return _account_failure(account, 'invalid_response')
                 stamp = event.get('timestamp')
-                if type(stamp) is not int or stamp < 0:
+                if isinstance(stamp, str) and TIMESTAMP_MS.fullmatch(stamp):
+                    stamp = int(stamp)
+                if type(stamp) is not int or not 0 <= stamp <= 253402300799999:
                     return _account_failure(account, 'invalid_response')
                 moment = datetime.fromtimestamp(stamp / 1000, BEIJING)
                 if not start <= moment < end:
@@ -128,8 +156,9 @@ def collect_account(account, start, end, sender=post_json):
                 if any(not _nonnegative_integer(value) for value in values):
                     return _account_failure(account, 'invalid_response')
                 tokens = sum(values)
-                charge = event.get('chargedCents')
-                if charge is not None and not _nonnegative_integer(charge):
+                raw_charge = event.get('chargedCents')
+                charge = None if raw_charge is None else _source_cents(raw_charge)
+                if raw_charge is not None and charge is None:
                     return _account_failure(account, 'invalid_response')
                 # Preserve source charges even when an event has zero/missing
                 # token counts or an unavailable model name. Ignore only rows
@@ -159,7 +188,10 @@ def collect_account(account, start, end, sender=post_json):
         return _account_failure(account, 'events_failed')
     except Exception:
         return _account_failure(account, 'invalid_response')
-    aggregate['charged_cents'] = aggregate['charged_cents'] if aggregate['charge_records'] else None
+    try:
+        aggregate['charged_cents'] = _json_cents(aggregate['charged_cents']) if aggregate['charge_records'] else None
+    except (ValueError, OverflowError, ArithmeticError):
+        return _account_failure(account, 'amount_out_of_range')
     return {'email': email, 'ok': True, 'shared': account['shared'], **aggregate,
             'models': sorted(aggregate['models'].values(), key=lambda row: (-row['total_tokens'], row['model'])),
             'by_day': sorted(aggregate['by_day'].values(), key=lambda row: row['day'])}

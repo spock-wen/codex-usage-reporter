@@ -29,6 +29,8 @@ DEVICE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$')
 MODEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$')
 EVENT_FIELDS = {'event_id', 'timestamp', 'model', 'total_tokens', *TOKEN_FIELDS}
 COUNT_FIELDS = ('requests', *TOKEN_FIELDS, 'total_tokens')
+MAX_CURSOR_CENTS = Decimal(2 ** 36)
+CURSOR_CENTS_QUANTUM = Decimal('0.0001')
 
 class Invalid(ValueError):
     pass
@@ -187,8 +189,16 @@ def validate_cursor_snapshot(payload):
                 raise Invalid('invalid Cursor account count')
             counts[key] = value
         charged = account['charged_cents']
-        if charged is not None and (type(charged) is not int or not 0 <= charged <= 10**15):
-            raise Invalid('invalid Cursor charged amount')
+        if charged is not None:
+            if type(charged) not in (int, float):
+                raise Invalid('invalid Cursor charged amount')
+            amount = Decimal(str(charged))
+            if not amount.is_finite() or amount < 0 or amount > MAX_CURSOR_CENTS or (amount * 10000) != (amount * 10000).to_integral_value():
+                raise Invalid('invalid Cursor charged amount')
+            try:
+                charged = cursor_cents_number(amount)
+            except (ValueError, OverflowError, ArithmeticError):
+                raise Invalid('invalid Cursor charged amount') from None
         if not isinstance(account['models'], list) or len(account['models']) > 500 or not isinstance(account['by_day'], list) or len(account['by_day']) > 7:
             raise Invalid('invalid Cursor breakdown')
         models, model_names = [], set()
@@ -227,11 +237,44 @@ def validate_cursor_snapshot(payload):
             raise Invalid('Cursor charge coverage does not reconcile')
         accounts.append({'email': email, 'ok': True, 'shared': account['shared'], **counts,
                          'charged_cents': charged, 'models': models, 'by_day': sorted(days, key=lambda row: row['day'])})
+    snapshot_charge_total = sum((Decimal(str(row['charged_cents'])) for row in accounts
+                                 if row['ok'] and row['charged_cents'] is not None), Decimal(0))
+    if snapshot_charge_total > MAX_CURSOR_CENTS:
+        raise Invalid('Cursor snapshot charged total exceeds safe precision range')
     complete = payload['pagination_complete'] and all(a['ok'] for a in accounts)
     normalized = {'schema_version': 1, 'kind': 'cursor_weekly_snapshot', 'run_id': run_id,
         'period_start': lo.isoformat(), 'period_end': hi.isoformat(), 'captured_at': captured.isoformat(),
         'pagination_complete': payload['pagination_complete'], 'accounts': accounts}
     return normalized, complete
+
+
+def cursor_cents_number(value):
+    amount = value if isinstance(value, Decimal) else Decimal(str(value))
+    if (not amount.is_finite() or amount < 0 or amount > MAX_CURSOR_CENTS or
+            (amount * 10000) != (amount * 10000).to_integral_value()):
+        raise ValueError('Cursor amount outside supported precision range')
+    if amount == amount.to_integral_value():
+        return int(amount)
+    number = float(amount.quantize(CURSOR_CENTS_QUANTUM))
+    if Decimal(str(number)) != amount:
+        raise ValueError('Cursor amount cannot round-trip at 0.0001-cent precision')
+    return number
+
+
+def cursor_cents_output(value):
+    amount = value if isinstance(value, Decimal) else Decimal(str(value))
+    if (not amount.is_finite() or amount < 0 or
+            (amount * 10000) != (amount * 10000).to_integral_value()):
+        raise ValueError('invalid Cursor amount for summary')
+    if amount <= MAX_CURSOR_CENTS:
+        return cursor_cents_number(amount)
+    if amount == amount.to_integral_value():
+        integer = int(amount)
+        return integer if integer <= 2 ** 53 - 1 else str(integer)
+    # A wide aggregate may no longer fit a JSON/browser float at 0.0001-cent
+    # precision. Keep the exact decimal text so a charge never breaks token data.
+    return format(amount.quantize(CURSOR_CENTS_QUANTUM), 'f')
+
 
 class UsageTotal:
     def __init__(self):
@@ -538,9 +581,9 @@ class Store:
         daily = defaultdict(lambda: {'total_tokens': 0, 'usage_records': 0})
         models = defaultdict(lambda: {'total_tokens': 0, 'usage_records': 0})
         people = defaultdict(lambda: {'email': '', 'shared': False, 'total_tokens': 0, 'usage_records': 0,
-            'charged_cents': 0, 'has_charges': False, 'charge_complete': True, 'last_success_at': None,
+            'charged_cents': Decimal(0), 'has_charges': False, 'charge_complete': True, 'last_success_at': None,
             'models': defaultdict(lambda: {'total_tokens': 0, 'usage_records': 0})})
-        charge_subtotal, charge_missing, total_tokens, total_records = 0, 0, 0, 0
+        charge_subtotal, charge_missing, total_tokens, total_records = Decimal(0), 0, 0, 0
         user_status = {}
         for row in account_rows:
             person = people[row['email']]
@@ -551,9 +594,10 @@ class Store:
             person['usage_records'] += row['usage_records']
             person['last_success_at'] = max(person['last_success_at'] or '', row['last_success_at']) or None
             if row['charged_cents'] is not None:
-                person['charged_cents'] += row['charged_cents']
+                amount = Decimal(str(row['charged_cents']))
+                person['charged_cents'] += amount
                 person['has_charges'] = True
-                charge_subtotal += row['charged_cents']
+                charge_subtotal += amount
             if row['unpriced_records']:
                 person['charge_complete'] = False
                 charge_missing += row['unpriced_records']
@@ -606,14 +650,14 @@ class Store:
                 for stamp in week_starts if stamp in newest_by_week)
         return {'period_start': lo.isoformat(), 'period_end': hi.isoformat(), 'timezone': 'Asia/Shanghai', 'source': 'cursor',
             'totals': {'requests': total_records, 'usage_records': total_records, 'total_tokens': total_tokens,
-                'charged_cents': charge_subtotal if summary_charge_complete else None,
-                'charge_subtotal_cents': charge_subtotal, 'unpriced_records': charge_missing,
+                'charged_cents': cursor_cents_output(charge_subtotal) if summary_charge_complete else None,
+                'charge_subtotal_cents': cursor_cents_output(charge_subtotal), 'unpriced_records': charge_missing,
                 'charge_complete': summary_charge_complete,
                 'is_complete': all_complete},
             'by_user': [{'email': person['email'], 'shared': person['shared'], 'available': bool(person.get('_has_snapshot')), 'error_code': user_status.get(person['email'], {}).get('error_code'), 'last_success_at': person['last_success_at'],
                 'totals': {'requests': person['usage_records'] if person.get('_has_snapshot') else None, 'usage_records': person['usage_records'] if person.get('_has_snapshot') else None, 'total_tokens': person['total_tokens'] if person.get('_has_snapshot') else None,
-                    'charged_cents': person['charged_cents'] if person_charge_complete(person) else None,
-                    'charge_subtotal_cents': person['charged_cents'] if person.get('_has_snapshot') else None,
+                    'charged_cents': cursor_cents_output(person['charged_cents']) if person_charge_complete(person) else None,
+                    'charge_subtotal_cents': cursor_cents_output(person['charged_cents']) if person.get('_has_snapshot') else None,
                     'charge_complete': person_charge_complete(person), 'is_complete': bool(person.get('_has_snapshot')) and all_complete and all(
                         run_account_latest.get((stamp, person['email']), {}).get('ok', True)
                         for stamp in week_starts if stamp in newest_by_week)},

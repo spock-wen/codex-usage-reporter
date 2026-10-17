@@ -5,11 +5,12 @@ import unittest
 import urllib.request
 import uuid
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from collector import BEIJING
 from cursor_weekly import NoRedirectHandler, collect_account, validate_local_endpoint, week_bounds
-from server import Invalid, Store, validate_cursor_snapshot
+from server import Invalid, Store, cursor_cents_number, cursor_cents_output, validate_cursor_snapshot
 
 
 class CursorWeeklyTests(unittest.TestCase):
@@ -21,9 +22,9 @@ class CursorWeeklyTests(unittest.TestCase):
     def test_collector_aggregates_model_day_and_source_amount(self):
         start = datetime(2026, 10, 5, tzinfo=BEIJING)
         end = start + timedelta(days=7)
-        event = {'timestamp': int(datetime(2026, 10, 6, 3, tzinfo=BEIJING).timestamp() * 1000),
+        event = {'timestamp': str(int(datetime(2026, 10, 6, 3, tzinfo=BEIJING).timestamp() * 1000)),
             'model': 'cursor-model', 'tokenUsage': {'inputTokens': 100, 'outputTokens': 20, 'cacheReadTokens': 30, 'cacheWriteTokens': 5},
-            'chargedCents': 7}
+            'chargedCents': 12.8408}
         calls = []
         def sender(url, headers, body=None):
             calls.append((url, body))
@@ -35,7 +36,7 @@ class CursorWeeklyTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(result['total_tokens'], 155)
         self.assertEqual(result['usage_records'], 1)
-        self.assertEqual(result['charged_cents'], 7)
+        self.assertEqual(result['charged_cents'], 12.8408)
         self.assertEqual(result['models'], [{'model': 'cursor-model', 'total_tokens': 155, 'usage_records': 1}])
         self.assertEqual(result['by_day'][0]['day'], '2026-10-06')
         self.assertTrue(all('must-not-leak' not in json.dumps(call) for call in calls))
@@ -177,6 +178,78 @@ class CursorWeeklyTests(unittest.TestCase):
         with self.assertRaises(Invalid):
             validate_cursor_snapshot(self.payload(start, end, [account]))
 
+    def test_source_charge_rejects_precision_below_one_ten_thousandth_cent(self):
+        start = datetime(2026, 10, 5, tzinfo=BEIJING)
+        end = start + timedelta(days=7)
+        account = self.account_cost('a@example.com', 100)
+        account['charged_cents'] = 12.84081
+        with self.assertRaises(Invalid):
+            validate_cursor_snapshot(self.payload(start, end, [account]))
+
+    def test_cursor_amount_output_rejects_values_above_exact_browser_range(self):
+        self.assertEqual(cursor_cents_number(Decimal(2 ** 36)), 2 ** 36)
+        with self.assertRaises(ValueError):
+            cursor_cents_number(Decimal('1000000000000.0003'))
+        self.assertEqual(cursor_cents_output(Decimal('1000000000000.0003')), '1000000000000.0003')
+
+    def test_cursor_snapshot_rejects_aggregate_amount_above_exact_browser_range(self):
+        start = datetime(2026, 10, 5, tzinfo=BEIJING)
+        end = start + timedelta(days=7)
+        per_account = float(Decimal(2 ** 35) + Decimal('0.0001'))
+        self.assertEqual(Decimal(str(per_account)), Decimal(2 ** 35) + Decimal('0.0001'))
+        first = self.account_cost('a@example.com', 100)
+        second = self.account_cost('b@example.com', 100)
+        first['charged_cents'] = per_account
+        second['charged_cents'] = per_account
+        with self.assertRaises(Invalid):
+            validate_cursor_snapshot(self.payload(start, end, [first, second]))
+
+    def test_cursor_summary_preserves_exact_amount_across_multiple_weeks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / 'usage.sqlite3', 'test-admin-key-with-at-least-24-chars')
+            start = datetime(2026, 10, 5, tzinfo=BEIJING)
+            last_amount = float(Decimal(2 ** 36) - Decimal('0.0001'))
+            for index in range(16):
+                week_start = start + timedelta(days=7 * index)
+                week_end = week_start + timedelta(days=7)
+                account = self.account_cost('a@example.com', 100)
+                account['charged_cents'] = last_amount if index == 15 else 2 ** 36
+                account['charge_records'] = 2
+                account['unpriced_records'] = 0
+                account['by_day'][0]['day'] = (week_start + timedelta(days=1)).date().isoformat()
+                captured = week_end + timedelta(hours=1)
+                store.ingest_cursor_snapshot(self.payload(week_start, week_end, [account], captured))
+
+            summary = store.cursor_summary(start, start + timedelta(days=112))
+            expected = Decimal(2 ** 36) * 16 - Decimal('0.0001')
+            self.assertEqual(summary['totals']['total_tokens'], 1600)
+            self.assertEqual(summary['totals']['charged_cents'], format(expected, 'f'))
+
+    def test_partial_snapshot_retained_values_keep_summary_readable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / 'usage.sqlite3', 'test-admin-key-with-at-least-24-chars')
+            start = datetime(2026, 10, 5, tzinfo=BEIJING)
+            end = start + timedelta(days=7)
+            first = self.account_cost('a@example.com', 100)
+            second = self.account_cost('b@example.com', 100)
+            first['charged_cents'] = 0.0001
+            second['charged_cents'] = float(Decimal(2 ** 36) - Decimal('0.0001'))
+            first['charge_records'] = second['charge_records'] = 2
+            first['unpriced_records'] = second['unpriced_records'] = 0
+            store.ingest_cursor_snapshot(self.payload(start, end, [first, second]))
+
+            updated = self.account_cost('a@example.com', 200)
+            updated['charged_cents'] = float(Decimal(2 ** 36) - Decimal('0.0001'))
+            updated['charge_records'] = 2
+            updated['unpriced_records'] = 0
+            store.ingest_cursor_snapshot(self.payload(start, end, [updated, self.failure('b@example.com')],
+                datetime(2026, 10, 20, tzinfo=BEIJING)))
+
+            summary = store.cursor_summary(start, end)
+            self.assertEqual(summary['totals']['total_tokens'], 300)
+            self.assertEqual(summary['totals']['charge_subtotal_cents'], '137438953471.9998')
+            self.assertFalse(summary['totals']['charge_complete'])
+
     def test_cursor_summary_keeps_per_user_priced_subtotal_when_incomplete(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / 'usage.sqlite3', 'test-admin-key-with-at-least-24-chars')
@@ -185,7 +258,8 @@ class CursorWeeklyTests(unittest.TestCase):
             store.ingest_cursor_snapshot(self.payload(start, end, [self.account_cost('a@example.com', 100)]))
             user = store.cursor_summary(start, end)['by_user'][0]
             self.assertIsNone(user['totals']['charged_cents'])
-            self.assertEqual(user['totals']['charge_subtotal_cents'], 9)
+            self.assertEqual(user['totals']['charge_subtotal_cents'], 12.8408)
+            self.assertEqual(store.cursor_summary(start, end)['totals']['charge_subtotal_cents'], 12.8408)
             self.assertFalse(user['totals']['charge_complete'])
 
     def test_bearer_requests_do_not_follow_redirects(self):
@@ -218,7 +292,7 @@ class CursorWeeklyTests(unittest.TestCase):
     @staticmethod
     def account_cost(email, tokens):
         return {'email': email, 'ok': True, 'shared': False, 'usage_records': 2, 'total_tokens': tokens,
-            'charged_cents': 9, 'charge_records': 1, 'unpriced_records': 1,
+            'charged_cents': 12.8408, 'charge_records': 1, 'unpriced_records': 1,
             'models': [{'model': 'cursor-model', 'total_tokens': tokens, 'usage_records': 2}],
             'by_day': [{'day': '2026-10-06', 'total_tokens': tokens, 'usage_records': 2}]}
 
