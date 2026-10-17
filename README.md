@@ -1,8 +1,8 @@
-# Codex Usage Reporter
+# AI 编程用量看板
 
 代码托管：[GitHub](https://github.com/spock-wen/codex-usage-reporter) · [Gitee 镜像](https://gitee.com/hihope-aifoundry/codex-usage-reporter)。GitHub 访问不畅时，可按[同事指南](docs/colleague-guide.md#github-访问不畅时使用-gitee)交给 Codex 从 Gitee 安装。
 
-从本地 Codex 日志统计 token 和 API 等值费用，自动读取登录邮箱接入团队服务，在网页查看邮箱、设备、每日和模型分布。当前部署地址：[codex.wenspock.site](https://codex.wenspock.site)。采用**内部自报 · 邮箱未验证**，无需管理员预登记、手填邮箱/上传令牌或邮件验证码；看板查看仍需管理员密钥。
+Codex 从同事本机日志上报，Cursor 由 65 服务器集中按周拉取；网页按来源、邮箱、每日和模型查看团队用量。两种来源的请求数与金额口径分别呈现，避免把 Cursor 记录金额和 Codex API 等值估算混成一笔账。当前看板地址：[codex.wenspock.site](https://codex.wenspock.site)。Codex 接入采用**内部自报 · 邮箱未验证**，无需管理员预登记、手填邮箱/上传令牌或邮件验证码；看板查看仍需管理员密钥。
 
 新装且没有配置时默认使用 codex.wenspock.site。旧地址 https://usage.wenspock.site 保留相同接口与数据，已有配置继续使用原地址和凭据，更新 skill 不会静默迁移；旧地址直接处理上报，不依赖重定向。
 
@@ -27,8 +27,9 @@
 - `collector.py`：读取单个 Codex 日志根中的 `sessions`、`archived_sessions`，生成聚合报告和可选的请求 hash 事件包。详细口径见 [采集器说明](README-collector.md)。
 - `identity.py`：通过本地 Codex app-server 只读查询当前登录邮箱和套餐，默认掩码邮箱；不登录、不刷新凭据，也不能据此判定历史请求的账户归属。
 - `enrollment.py`：读取本机 Codex 登录邮箱、自动注册本设备凭据并保存私人状态；不使用 OpenAI 登录令牌上报。`client.py` 上传保存的事件包，采用 HTTPS、有界重试和严格 ACK 校验，禁止重定向；`report.py` 串起接入、采集、保存和显式上报。
-- `server.py`：Python HTTP + SQLite，匿名接收内部自报注册，再按邮箱凭据接收请求并重算费用；管理员查询统计、隔离冲突和导出 CSV。旧手动签发 API 兼容保留。
-- `web/`：中文看板，展示邮箱汇总、趋势、模型、设备同步、未提交及隔离冲突。
+- `server.py`：Python HTTP + SQLite，接收 Codex 自报事件，并接收管理端提交的 Cursor 自然周快照；同一邮箱和周的 Cursor 重采集替换原快照，避免重复累计。
+- `cursor_weekly.py`：服务器端 Cursor 周采集器，读取服务器私有账号清单，只提交邮箱、按周汇总的 token、模型、日期和可用的来源金额，不保存或返回 Cursor API 密钥。
+- `web/`：中文统一看板，按来源和邮箱展示周用量、模型、趋势、同步状态；姓名和部门可在后续人员表接入后补齐。
 - `deploy/`：独立 systemd、Nginx HTTPS/ACME 配置和保留数据与凭据的版本安装脚本，见 [远端部署说明](README-deploy.md)。
 
 ## 本地运行
@@ -58,11 +59,11 @@ python -m unittest discover -v
 
 ## 去重、费用与覆盖范围
 
-请求标识为 `sha256('openai:codex:' + response_id)`，不包含邮箱、机器、路径或时间窗口。服务器使用团队内全局唯一请求键：同机重复上报、跨机复制日志和重叠周期不会重复计算；多台机器的独立请求正常累加。批次 ID 用于识别重试，不能代替逐请求去重。
+Codex 请求标识为 `sha256('openai:codex:' + response_id)`，不包含邮箱、机器、路径或时间窗口。服务器使用团队内全局唯一请求键：同机重复上报、跨机复制日志和重叠周期不会重复计算；多台机器的独立请求正常累加。Cursor 当前数据源没有可确认的稳定请求 ID，因此按邮箱和自然周保存完整汇总快照；重复采集替换该邮箱该周的值，不对周快照求和。
 
 同一请求标识出现 token、时间、模型或上报邮箱冲突时，进入隔离状态，所有副本从有效统计中排除，不默认先上传者正确。格式非法的事件包整批拒绝。邮箱为未验证的内部自报标签，不是可信 SSO 身份，也不验证历史日志归属。自动配置每次上报前核对当前登录邮箱，换号时拒绝继续，只有明确确认切换归属才重新接入；历史日志仍不自动分账。
 
-输入 token 已包含缓存读写，输出 token 已包含 reasoning，不能重复相加。费用由服务器按 `prices.json` 的模型、缓存和长上下文规则计算，是价格快照下的 API 等值估算，不能解释为订阅扣费或剩余额度。未知模型显示未定价和已定价小计；缺少数据、未提交或冲突时不能把部分观测值称为完整账户用量。
+Codex 输入 token 已包含缓存读写，输出 token 已包含 reasoning，不能重复相加。Codex 费用由服务器按 `prices.json` 计算，是 API 等值估算。Cursor token 和记录数按返回的源端事件聚合；有 `chargedCents` 的事件即使没有 token/model 也保留金额，缺少 model 时显示为 `unknown`。缺少源金额的 token 事件会标记金额覆盖不完整。该来源金额不代表订阅账单，也不与 Codex 估算金额合并。分页被截断或账号失败时保留上次成功快照并标记采集不完整；延迟旧快照不能覆盖较新快照或恢复已移除账号。
 
 默认 `last-week` 为北京时间上个自然周；显式 `this-week` 为北京时间本周一 00:00 至本次采集时刻，只有明确要求“最近 7 天”或指定 `last7` 时，才使用截至执行时刻连续七天。所有查询区间左闭右开。日志仅覆盖已读取并上报的本地记录，其他机器、云端、已删除历史及缺少稳定请求 ID 的记录可能不在统计中。
 

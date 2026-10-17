@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -160,6 +161,29 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertNotIn(token, json.dumps(duplicate_user))
         self.upload(token, events)
         self.assert_totals(self.summary(), events)
+
+    def test_cursor_snapshot_endpoint_is_admin_only_and_idempotent(self):
+        start, end = "2026-10-05T00:00:00+08:00", "2026-10-12T00:00:00+08:00"
+        row = {"email": "cursor-alpha@example.test", "ok": True, "shared": False,
+               "usage_records": 1, "total_tokens": 321, "charged_cents": 9,
+               "charge_records": 1, "unpriced_records": 0,
+               "models": [{"model": "cursor-model", "total_tokens": 321, "usage_records": 1}],
+               "by_day": [{"day": "2026-10-06", "total_tokens": 321, "usage_records": 1}]}
+        snapshot = {"schema_version": 1, "kind": "cursor_weekly_snapshot", "run_id": str(uuid.uuid4()),
+                    "period_start": start, "period_end": end, "captured_at": "2026-10-17T12:00:00+08:00",
+                    "pagination_complete": True, "accounts": [row]}
+        status, first = self.http("POST", "/api/cursor/snapshots", self.admin, snapshot)
+        self.assertEqual(status, 200)
+        self.assertFalse(first["repeated"])
+        status, repeated = self.http("POST", "/api/cursor/snapshots", self.admin, snapshot)
+        self.assertEqual(status, 200)
+        self.assertTrue(repeated["repeated"])
+        status, _ = self.http("GET", "/api/cursor/summary?start=2026-10-05&end=2026-10-12")
+        self.assertEqual(status, 401)
+        status, summary = self.http("GET", "/api/cursor/summary?start=2026-10-05&end=2026-10-12", self.admin)
+        self.assertEqual(status, 200)
+        self.assertEqual(summary["totals"]["total_tokens"], 321)
+        self.assertEqual(summary["totals"]["charged_cents"], 9)
 
     def test_two_devices_union_for_same_email(self):
         token = self.user(EMAIL_A)

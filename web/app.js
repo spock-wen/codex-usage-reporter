@@ -1,335 +1,88 @@
 (() => {
-  "use strict";
-  const $ = (id) => document.getElementById(id);
-  const number = new Intl.NumberFormat("zh-CN");
-  const money = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  let adminKey = "";
-  let summary = null;
-  let registeredUsers = [];
-  let requestSequence = 0;
-  let activeRequest = null;
-  let emailTimer;
-  let tokenDialogSequence = 0;
-  let tokenRequestPending = false;
-  try { adminKey = sessionStorage.getItem("codex_usage_admin") || ""; } catch (_) { /* Memory-only fallback. */ }
-
-  function node(tag, className, text) {
-    const element = document.createElement(tag);
-    if (className) element.className = className;
-    if (text !== undefined) element.textContent = String(text);
-    return element;
-  }
-  function finite(value) { return typeof value === "number" && Number.isFinite(value) && value >= 0; }
-  function count(value) { return finite(value) ? number.format(value) : "—"; }
-  function compact(value) {
-    if (!finite(value)) return "—";
-    for (const [base, suffix] of [[1e9, "B"], [1e6, "M"], [1e3, "K"]]) {
-      if (value >= base) return (value / base).toLocaleString("en-US", { maximumFractionDigits: value / base < 10 ? 2 : 1 }) + suffix;
-    }
-    return count(value);
-  }
-  function amount(value) { return finite(value) ? "$" + money.format(value) : "未定价"; }
-  function costDisplay(totals = {}) {
-    if (finite(totals.estimated_cost_usd)) return { value: amount(totals.estimated_cost_usd), label: "API 等值费用", detail: "按价格快照估算，非订阅账单", partial: false };
-    const unpriced = finite(totals.unpriced_requests) ? totals.unpriced_requests : 0;
-    return { value: amount(totals.priced_cost_usd), label: unpriced ? "已定价费用小计" : "观测费用小计",
-      detail: unpriced ? count(unpriced) + " 条未知模型请求未定价；小计仅含已定价记录" : "仅含可用日志，非完整账户费用或订阅账单", partial: true };
-  }
-  function coverageNotice(data) {
-    const quality = data.quality || {};
-    const incompletePeriods = finite(quality.incomplete_device_periods) ? quality.incomplete_device_periods : 0;
-    const missing = Array.isArray(quality.missing_users) ? quality.missing_users.length : 0;
-    const partialDevices = finite(quality.partial_coverage_devices) ? quality.partial_coverage_devices : 0;
-    const unpriced = finite(data.totals?.unpriced_requests) ? data.totals.unpriced_requests : 0;
-    const incomplete = data.totals?.is_complete === false || quality.is_complete === false || incompletePeriods > 0 || missing > 0 || partialDevices > 0;
-    let message = incomplete ? "仅显示可用日志的用量小计，不能视为完整账户用量。" : "已获取所选区间的上报记录；本地日志不代表完整账户用量。";
-    if (incompletePeriods) message += " " + count(incompletePeriods) + " 个设备统计区间日志不完整，请检查缺失日志。";
-    if (partialDevices) message += " " + count(partialDevices) + " 台已上报设备仅覆盖所选区间部分日期。";
-    if (missing) message += " " + count(missing) + " 个邮箱本期未提交，不能视为已核实的零用量。";
-    if (unpriced) message += " " + count(unpriced) + " 条未知模型请求尚未定价，费用仅显示已定价小计。";
-    if (quality.conflicted_events_excluded > 0) message += " 冲突记录已隔离，不计入小计。";
-    if (!data.totals?.requests) message += " 此区间尚无有效用量。";
-    return { message, type: incomplete || unpriced ? "warning" : "success" };
-  }
-  function incompleteReasonText(reason) {
-    const labels = { no_files: "没有找到本地日志", no_canonical_usage_records: "没有可去重的用量记录", source_starts_after_period: "本地日志未覆盖区间起点",
-      conflicting_response_ids: "同一请求的记录存在冲突", unreadable_files: "部分日志无法读取", malformed_lines: "部分日志内容损坏",
-      usage_records_without_response_id: "部分请求缺少去重标识", invalid_usage_timestamps: "部分请求时间无效", invalid_usage_records: "部分用量记录无效" };
-    return labels[reason] || "部分日志或记录不可用";
-  }
-  function dateTime(value) {
-    if (!value) return "尚未同步";
-    const date = new Date(value);
-    if (!Number.isFinite(date.getTime())) return "时间未知";
-    return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
-  }
-  function notice(text, type = "") { $("notice").textContent = text; $("notice").className = "notice" + (type ? " " + type : ""); }
-  function updateConnection(connected) {
-    $("connection-label").textContent = connected ? "已连接" : "尚未连接";
-    document.querySelector(".service-pill").classList.toggle("connected", connected);
-    $("disconnect-button").hidden = !adminKey;
-    $("add-email-button").disabled = !connected;
-  }
-  function rememberKey(value) {
-    adminKey = value;
-    try { if (value) sessionStorage.setItem("codex_usage_admin", value); else sessionStorage.removeItem("codex_usage_admin"); } catch (_) { /* No persistence required. */ }
-    $("disconnect-button").hidden = !value;
-    if (!value) { $("upload-token").value = ""; if ($("add-email-dialog").open) $("add-email-dialog").close(); }
-  }
-  function clearData(message = "暂无数据") {
-    summary = null;
-    for (const id of ["stat-tokens", "stat-cost", "stat-requests", "stat-users"]) { $(id).textContent = "—"; $(id).removeAttribute("title"); }
-    $("stat-tokens-detail").textContent = "输入与输出合计";
-    $("stat-cost-detail").textContent = "按价格快照估算，非订阅账单";
-    $("stat-cost-label").textContent = "API 等值费用";
-    $("user-count").textContent = "—";
-    $("trend-chart").replaceChildren(node("p", "empty-message", message));
-    $("model-list").replaceChildren(node("p", "empty-message", message));
-    $("batch-list").replaceChildren(node("p", "empty-message compact", message));
-    const row = node("tr"); const cell = node("td", "empty-cell", message); cell.colSpan = 6; row.append(cell);
-    $("users-body").replaceChildren(row);
-    $("conflict-banner").hidden = true;
-    $("export-button").disabled = true;
-    $("last-updated").textContent = "尚未同步";
-    $("pricing-note").textContent = "估算费用不代表实际订阅扣费。";
-    $("trend-caption").textContent = "数据来自已接收并去重的上报记录";
-  }
-  function query() {
-    const start = $("start-date").value;
-    const end = $("end-date").value;
-    if (!start || !end || start >= end) throw new Error("invalid_range");
-    const params = new URLSearchParams({ start, end });
-    if ($("email-filter").value.trim()) params.set("email", $("email-filter").value.trim());
-    return params;
-  }
-  async function api(path, options = {}) {
-    const headers = { Authorization: "Bearer " + adminKey, ...(options.headers || {}) };
-    const response = await fetch(new URL("./api/" + path, location.href), { ...options, headers });
-    if (response.status === 401 || response.status === 403) throw new Error("unauthorized");
-    if (response.status === 409) throw new Error("already_exists");
-    if (!response.ok) throw new Error("request_failed");
-    return response;
-  }
-  function errorMessage(error) {
-    if (error.message === "unauthorized") return "管理员密钥无效或已失效，请重新连接。";
-    if (error.message === "invalid_range") return "请选择有效日期，结束日期必须晚于开始日期。";
-    if (error.message === "invalid_data") return "服务返回的数据格式异常，本次结果未显示。";
-    return "无法获取最新数据，请确认本地服务仍在运行后重试。";
-  }
-  async function loadData() {
-    if (!adminKey) { notice("请先输入管理员密钥连接看板。"); $("admin-key").focus(); return; }
-    let params;
-    try { params = query(); } catch (error) { clearData("筛选日期无效"); notice(errorMessage(error), "error"); return; }
-    const sequence = ++requestSequence;
-    if (activeRequest) activeRequest.abort();
-    activeRequest = new AbortController();
-    clearData("正在读取最新数据…");
-    notice("正在获取所选区间的统计结果…");
-    $("refresh-button").disabled = true;
-    try {
-      const responses = await Promise.all([
-        api("summary?" + params, { signal: activeRequest.signal }),
-        api("users", { signal: activeRequest.signal })
-      ]);
-      const [data, users] = await Promise.all(responses.map((response) => response.json()));
-      if (sequence !== requestSequence) return;
-      if (!data || typeof data !== "object" || !data.totals || !Array.isArray(data.by_user) || !users || !Array.isArray(users.users)) throw new Error("invalid_data");
-      summary = data;
-      registeredUsers = users.users;
-      updateConnection(true);
-      $("admin-key").value = "";
-      render();
-      $("export-button").disabled = false;
-      $("last-updated").textContent = "更新于 " + dateTime(new Date().toISOString()) + " · 北京时间";
-      const coverage = coverageNotice(data);
-      notice(coverage.message, coverage.type);
-    } catch (error) {
-      if (sequence !== requestSequence || error.name === "AbortError") return;
-      clearData("本次读取失败，已清除旧结果");
-      updateConnection(false);
-      if (error.message === "unauthorized") { rememberKey(""); updateConnection(false); }
-      notice(errorMessage(error), "error");
-    } finally {
-      if (sequence === requestSequence) $("refresh-button").disabled = false;
-    }
-  }
-  function render() {
-    const totals = summary.totals;
-    $("stat-tokens").textContent = compact(totals.total_tokens);
-    $("stat-tokens").title = count(totals.total_tokens) + " Token";
-    $("stat-tokens-detail").textContent = "输入 " + compact(totals.input_tokens) + " · 输出 " + compact(totals.output_tokens);
-    const cost = costDisplay(totals);
-    $("stat-cost").textContent = cost.value;
-    $("stat-cost-label").textContent = cost.label;
-    $("stat-cost-detail").textContent = cost.detail;
-    $("stat-requests").textContent = count(totals.requests);
-    $("stat-users").textContent = count(summary.by_user.filter((row) => row.totals && row.totals.requests > 0).length);
-    const conflicts = Array.isArray(summary.conflicts) ? summary.conflicts : [];
-    const conflictCount = finite(summary.quality?.conflicted_events_excluded) ? summary.quality.conflicted_events_excluded : conflicts.length;
-    $("conflict-banner").hidden = !conflictCount;
-    if (conflictCount) {
-      $("conflict-banner").textContent = "发现 " + count(conflictCount) + " 条冲突记录，已隔离并排除于有效用量。费用为已定价记录的小计，完整估算暂不可得。";
-      $("conflict-banner").hidden = false;
-    }
-    const pricing = summary.pricing || {};
-    const verified = pricing.verified_at || (pricing.snapshot && pricing.snapshot.verified_at);
-    $("pricing-note").textContent = verified ? "价格快照：" + String(verified) + " · Standard API 等值，非订阅账单。" : "使用服务端价格快照估算，非订阅实际扣费。";
-    const options = registeredUsers.map((user) => { const option = node("option"); option.value = String(user.email || ""); return option; });
-    $("email-options").replaceChildren(...options);
-    renderUsers();
-    renderTrend();
-    renderModels();
-    renderBatches();
-  }
-  function allUsers() {
-    const map = new Map();
-    for (const user of registeredUsers) if (user.email) map.set(String(user.email), { email: String(user.email), submitted: false, devices: Array.isArray(user.devices) ? user.devices : [], totals: { requests: 0, total_tokens: 0, estimated_cost_usd: null, priced_cost_usd: 0 } });
-    for (const user of summary.by_user) if (user.email) map.set(String(user.email), user);
-    const filter = $("email-filter").value.trim().toLowerCase();
-    const search = $("user-search").value.trim().toLowerCase();
-    return [...map.values()].filter((user) => (!filter || String(user.email).toLowerCase() === filter) && (!search || String(user.email).toLowerCase().includes(search))).sort((a, b) => (b.totals?.total_tokens || 0) - (a.totals?.total_tokens || 0) || String(a.email).localeCompare(String(b.email)));
-  }
-  function renderUsers() {
-    if (!summary) return;
-    const users = allUsers();
-    $("user-count").textContent = count(users.length);
-    if (!users.length) {
-      const row = node("tr"); const cell = node("td", "empty-cell", "暂无匹配邮箱。成员通过本机 skill 自动接入后提交用量记录。"); cell.colSpan = 6; row.append(cell); $("users-body").replaceChildren(row); return;
-    }
-    const rows = users.map((user) => {
-      const row = node("tr"); const emailCell = node("td");
-      const button = node("button", "email-button"); button.type = "button";
-      const avatar = node("span", "email-avatar", String(user.email).slice(0, 1).toUpperCase()); avatar.setAttribute("aria-hidden", "true");
-      button.append(avatar, document.createTextNode(String(user.email)));
-      button.setAttribute("aria-label", "筛选邮箱 " + String(user.email));
-      button.addEventListener("click", () => { $("email-filter").value = String(user.email); loadData(); });
-      emailCell.append(button, node("span", "submission-badge" + (user.submitted ? " submitted" : " missing"), user.submitted ? "本期已提交" : "本期未提交")); row.append(emailCell);
-      const devices = Array.isArray(user.devices) ? user.devices : [];
-      const totals = user.totals || {};
-      row.append(node("td", "numeric", count(devices.length)), node("td", "numeric", count(totals.requests)));
-      const tokenCell = node("td", "numeric", compact(totals.total_tokens)); tokenCell.title = count(totals.total_tokens); row.append(tokenCell);
-      const cost = costDisplay(totals);
-      const costCell = node("td", "numeric" + (cost.partial ? " cost-unpriced" : ""), cost.value);
-      if (cost.partial) costCell.append(node("span", "cost-subtotal", cost.label + " · " + cost.detail));
-      row.append(costCell);
-      const latest = [user.last_seen, user.last_sync, ...devices.map((device) => device.last_seen)].filter(Boolean).sort().pop();
-      const sync = node("td", "", dateTime(latest)); if (latest) sync.title = String(latest); if (!user.submitted && latest) sync.append(node("span", "sync-history-label", "历史同步，非本期提交")); row.append(sync);
-      return row;
-    });
-    $("users-body").replaceChildren(...rows);
-  }
-  function renderTrend() {
-    const days = (Array.isArray(summary.by_day) ? summary.by_day : []).filter((row) => typeof (row.day || row.date) === "string" && finite(row.total_tokens)).sort((a, b) => String(a.day || a.date).localeCompare(String(b.day || b.date)));
-    if (!days.length) { $("trend-chart").replaceChildren(node("p", "empty-message", "所选区间暂无每日用量")); return; }
-    const ns = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(ns, "svg"); svg.setAttribute("viewBox", "0 0 740 210"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "每日输入与输出 Token 趋势，日期以北京时间计");
-    const element = (tag, attrs, text) => { const el = document.createElementNS(ns, tag); for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, String(value)); if (text !== undefined) el.textContent = String(text); return el; };
-    const left = 48, top = 14, width = 675, height = 151;
-    const maximum = Math.max(1, ...days.map((day) => day.total_tokens));
-    const x = (index) => left + (days.length === 1 ? width / 2 : index / (days.length - 1) * width);
-    const y = (value) => top + height - value / maximum * height;
-    for (let index = 0; index <= 3; index++) {
-      const value = maximum * index / 3, yy = y(value);
-      svg.append(element("line", { x1: left, x2: left + width, y1: yy, y2: yy, stroke: "#edf0f2", "stroke-dasharray": index ? "3 5" : "none" }));
-      svg.append(element("text", { x: left - 10, y: yy + 3, "text-anchor": "end", fill: "#a1aab4", "font-size": 9 }, compact(value)));
-    }
-    const points = days.map((day, index) => x(index) + "," + y(day.total_tokens)).join(" ");
-    svg.append(element("polygon", { points: left + "," + (top + height) + " " + points + " " + (left + width) + "," + (top + height), fill: "#f0f5fd" }));
-    svg.append(element("polyline", { points, fill: "none", stroke: "#7b9fdc", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
-    const step = Math.max(1, Math.ceil(days.length / 9));
-    days.forEach((day, index) => {
-      const circle = element("circle", { cx: x(index), cy: y(day.total_tokens), r: 3, fill: "#fff", stroke: "#7b9fdc", "stroke-width": 1.5 });
-      circle.append(element("title", {}, String(day.day || day.date) + "：" + count(day.total_tokens) + " Token")); svg.append(circle);
-      if (index % step === 0 || index === days.length - 1) svg.append(element("text", { x: x(index), y: 189, "text-anchor": "middle", fill: "#9aa5b0", "font-size": 9 }, String(day.day || day.date).slice(5).replace("-", "/")));
-    });
-    $("trend-chart").replaceChildren(svg);
-    $("trend-caption").textContent = days.length + " 个有使用记录的日期 · K = 千 / M = 百万 / B = 十亿";
-  }
-  function renderModels() {
-    const models = (Array.isArray(summary.by_model) ? summary.by_model : []).slice().sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0));
-    if (!models.length) { $("model-list").replaceChildren(node("p", "empty-message", "所选区间暂无模型记录")); return; }
-    const total = models.reduce((sum, model) => sum + (finite(model.total_tokens) ? model.total_tokens : 0), 0);
-    const colors = ["#7f9fda", "#9fb8d1", "#b1c9c5", "#c0bfd4", "#cdd5dd"];
-    $("model-list").replaceChildren(...models.map((model, index) => {
-      const item = node("div", "model-item"), row = node("div", "model-row");
-      row.append(node("span", "model-name", model.model || "unknown"), node("span", "model-number", compact(model.total_tokens) + " · " + (total ? Math.round(model.total_tokens / total * 100) : 0) + "%"));
-      const track = node("div", "model-track"), fill = node("div", "model-fill");
-      fill.style.width = (total && finite(model.total_tokens) ? Math.max(0, Math.min(100, model.total_tokens / total * 100)) : 0) + "%";
-      fill.style.backgroundColor = colors[index % colors.length]; track.append(fill);
-      const cost = costDisplay(model);
-      item.append(row, track, node("p", "model-cost", cost.value + " · " + (cost.partial ? cost.label + " · " + cost.detail : "API 等值")));
-      return item;
-    }));
-  }
-  function renderBatches() {
-    const batches = (Array.isArray(summary.batches) ? summary.batches : []).slice(0, 12);
-    if (!batches.length) { $("batch-list").replaceChildren(node("p", "empty-message compact", "暂无上报记录。成员可通过本机 skill 自动接入并提交第一份记录。")); return; }
-    $("batch-list").replaceChildren(...batches.map((batch) => {
-      const item = node("div", "batch-item"), identity = node("div");
-      identity.append(node("p", "batch-email", batch.email || "未知邮箱"), node("p", "batch-device", "设备 " + String(batch.device_id || "未知")));
-      const badges = node("div", "batch-counts");
-      badges.append(node("span", "batch-badge", "新增 " + count(batch.new)), node("span", "batch-badge duplicate", "重复 " + count(batch.duplicates)), node("span", "batch-badge conflict", "冲突 " + count(batch.conflicts)));
-      if (batch.rejected > 0) badges.append(node("span", "batch-badge conflict", "拒绝 " + count(batch.rejected)));
-      if (batch.is_complete === false) {
-        badges.append(node("span", "batch-badge conflict", "日志不完整"));
-        const reasons = Array.isArray(batch.incomplete_reasons) ? [...new Set(batch.incomplete_reasons.map(incompleteReasonText))] : [];
-        identity.append(node("p", "batch-device", reasons.length ? reasons.join("；") : "部分日志或记录不可用"));
-      }
-      item.append(identity, badges, node("time", "batch-time", dateTime(batch.received_at)));
-      return item;
-    }));
-  }
-  function beijingToday() { return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10); }
-  function addDays(value, days) { const date = new Date(value + "T00:00:00Z"); date.setUTCDate(date.getUTCDate() + days); return date.toISOString().slice(0, 10); }
-  function setPeriod(period) {
-    const today = beijingToday();
-    const weekday = new Date(today + "T00:00:00Z").getUTCDay();
-    const monday = addDays(today, -(weekday + 6) % 7);
-    $("start-date").value = period === "last7" ? addDays(today, -6) : period === "this-week" ? monday : addDays(monday, -7);
-    $("end-date").value = period === "last-week" ? monday : addDays(today, 1);
-    document.querySelectorAll("[data-period]").forEach((button) => button.classList.toggle("active", button.dataset.period === period));
-  }
-  $("access-form").addEventListener("submit", (event) => { event.preventDefault(); rememberKey($("admin-key").value.trim()); loadData(); });
-  $("disconnect-button").addEventListener("click", () => { if (tokenRequestPending) return; ++requestSequence; if (activeRequest) activeRequest.abort(); rememberKey(""); registeredUsers = []; $("email-options").replaceChildren(); $("admin-key").value = ""; updateConnection(false); clearData("连接后显示真实上报数据"); $("refresh-button").disabled = false; notice("已断开连接，并清除本标签页保存的管理员密钥。"); });
-  $("refresh-button").addEventListener("click", loadData);
-  document.querySelectorAll("[data-period]").forEach((button) => button.addEventListener("click", () => { setPeriod(button.dataset.period); if (adminKey) loadData(); }));
-  for (const id of ["start-date", "end-date"]) $(id).addEventListener("change", () => { document.querySelectorAll("[data-period]").forEach((button) => button.classList.remove("active")); if (adminKey) loadData(); });
-  $("email-filter").addEventListener("input", () => { clearTimeout(emailTimer); emailTimer = setTimeout(() => { if (adminKey) loadData(); }, 400); });
-  $("user-search").addEventListener("input", renderUsers);
-  $("export-button").addEventListener("click", async () => {
-    $("export-button").disabled = true;
-    try {
-      const params = query(), response = await api("export.csv?" + params);
-      const blob = await response.blob(), url = URL.createObjectURL(blob), anchor = node("a");
-      anchor.href = url; anchor.download = "codex-usage-" + $("start-date").value + "-" + $("end-date").value + ".csv";
-      document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (error) { if (error.message === "unauthorized") { rememberKey(""); updateConnection(false); clearData("登录已失效"); } notice(errorMessage(error), "error"); }
-    finally { $("export-button").disabled = !summary; }
-  });
-  const dialog = $("add-email-dialog");
-  $("add-email-button").addEventListener("click", () => { ++tokenDialogSequence; $("new-email").value = ""; $("upload-token").value = ""; $("email-form-status").textContent = ""; $("token-result").hidden = true; $("create-token-button").disabled = false; dialog.showModal(); $("new-email").focus(); });
-  $("close-email-dialog").addEventListener("click", () => { if (!tokenRequestPending) dialog.close(); });
-  dialog.addEventListener("cancel", (event) => { if (tokenRequestPending) event.preventDefault(); });
-  dialog.addEventListener("close", () => { ++tokenDialogSequence; $("upload-token").value = ""; $("token-result").hidden = true; });
-  $("add-email-form").addEventListener("submit", async (event) => {
-    event.preventDefault(); if (tokenRequestPending) return;
-    tokenRequestPending = true;
-    $("create-token-button").disabled = true; $("close-email-dialog").disabled = true; $("disconnect-button").disabled = true;
-    $("email-form-status").textContent = "正在生成…完成前请保持此窗口打开，上传令牌仅返回一次。";
-    const dialogSequence = tokenDialogSequence;
-    try {
-      const response = await api("users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: $("new-email").value.trim() }) });
-      const data = await response.json();
-      if (typeof data.upload_token !== "string" || !data.upload_token) throw new Error("invalid_data");
-      if (!dialog.open || dialogSequence !== tokenDialogSequence) return;
-      $("upload-token").value = data.upload_token; $("token-result").hidden = false; $("email-form-status").textContent = "邮箱已添加，上传令牌已生成。";
-      $("copy-token-button").textContent = "复制上传令牌";
-      loadData();
-    } catch (error) { $("email-form-status").textContent = error.message === "already_exists" ? "该邮箱已存在；原上传令牌保持有效。" : errorMessage(error); $("create-token-button").disabled = false; if (error.message === "unauthorized") { rememberKey(""); updateConnection(false); clearData("登录已失效"); } }
-    finally { tokenRequestPending = false; $("close-email-dialog").disabled = false; $("disconnect-button").disabled = false; }
-  });
-  $("copy-token-button").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("upload-token").value); $("copy-token-button").textContent = "已复制"; } catch (_) { $("upload-token").focus(); $("upload-token").select(); $("copy-token-button").textContent = "请按 Ctrl/Cmd + C 复制"; } });
-  setPeriod("last-week");
-  updateConnection(false);
-  if (adminKey) loadData();
+"use strict";
+const $=id=>document.getElementById(id), sources=["codex","cursor"], labels={codex:"Codex",cursor:"Cursor"};
+const titles={overview:"团队概览",weekly:"每周分析",members:"成员与模型",sync:"数据同步",people:"人员与账号"};
+const state={page:"overview",source:"all",syncSource:"codex",summaries:{},errors:{},registered:[],people:[],registryAvailable:false,groups:[],selected:"",sequence:0,detailSequence:0,controller:null,weekly:null,weeklyKey:"",weeklySequence:0};
+const fmt=new Intl.NumberFormat("zh-CN"), money=new Intl.NumberFormat("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+let adminKey="";try{adminKey=sessionStorage.getItem("codex_usage_admin")||"";}catch(_){}
+function node(tag,cls="",text){const el=document.createElement(tag);if(cls)el.className=cls;if(text!==undefined)el.textContent=String(text);return el;}
+function finite(v){return typeof v==="number"&&Number.isFinite(v)&&v>=0;}
+function num(v){return finite(v)?v:0;}
+function count(v){return finite(v)?fmt.format(v):"—";}
+function compact(v){if(!finite(v))return"—";for(const[b,s]of[[1e9,"B"],[1e6,"M"],[1e3,"K"]])if(v>=b)return(v/b).toLocaleString("en-US",{maximumFractionDigits:v/b<10?2:1})+s;return count(v);}
+function amount(v){return finite(v)?"$"+money.format(v):"未提供";}
+function percent(v,d){return d>0?(100*v/d).toLocaleString("zh-CN",{maximumFractionDigits:1})+"%":"—";}
+function color(key){let h=0;for(const c of String(key))h=(h*31+c.codePointAt(0))>>>0;return`hsl(${h%360} 65% 56%)`;}
+function dateTime(v){if(!v)return"未提供";const d=new Date(v);return Number.isFinite(d.getTime())?new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).format(d):"未提供";}
+function notice(text,type=""){ $("notice").textContent=text;$("notice").className="notice "+type;}
+function empty(el,text="所选区间暂无已接收记录。"){el.replaceChildren(node("p","empty-message",text));}
+function selectedSources(){return state.source==="all"?sources:[state.source];}
+function currentSummaries(){return selectedSources().map(s=>[s,state.summaries[s]]).filter(([,d])=>d);}
+function accountRows(d){return Array.isArray(d?.by_user)?d.by_user:[];}
+function email(v){return String(v||"").trim().toLowerCase();}
+function today(){return new Date(Date.now()+8*3600000).toISOString().slice(0,10);}
+function addDays(v,n){const d=new Date(v+"T00:00:00Z");d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10);}
+function monday(v){return addDays(v,-((new Date(v+"T00:00:00Z").getUTCDay()+6)%7));}
+function setPeriod(period){const t=today(),m=monday(t);$("start-date").value=period==="last7"?addDays(t,-6):period==="this-week"?m:addDays(m,-7);$("end-date").value=period==="last-week"?m:period==="this-week"?addDays(m,7):addDays(t,1);document.querySelectorAll("[data-period]").forEach(b=>b.classList.toggle("active",b.dataset.period===period));}
+function periodParams(){const start=$("start-date").value,end=$("end-date").value;if(!start||!end||start>=end)throw Error("invalid_range");return new URLSearchParams({start,end});}
+function saveKey(v){adminKey=v;try{if(v)sessionStorage.setItem("codex_usage_admin",v);else sessionStorage.removeItem("codex_usage_admin");}catch(_){}$("disconnect-button").hidden=!v;}
+function connection(ready){$("connection-label").textContent=ready?"已连接":"尚未连接";document.querySelector(".service-pill").classList.toggle("connected",ready);$("disconnect-button").hidden=!adminKey;}
+function errorText(e){return({unauthorized:"管理员密钥无效或权限不足",invalid_range:"结束日期必须晚于开始日期",not_found:"此来源接口尚未接入",invalid_data:"服务数据格式异常",cursor_week_required:"Cursor 仅支持周一至下周一的单个自然周，请选择上周自然周"})[e.message]||"暂时无法取得此来源数据";}
+async function api(path){const r=await fetch(new URL("./api/"+path,location.href),{headers:{Authorization:"Bearer "+adminKey},signal:state.controller?.signal,cache:"no-store"});if(r.status===401||r.status===403)throw Error("unauthorized");if(r.status===404)throw Error("not_found");if(!r.ok)throw Error("request_failed");return r.json();}
+async function summaryFor(source,params){if(source==="cursor"){const s=params.get("start"),e=params.get("end");if(monday(s)!==s||addDays(s,7)!==e)throw Error("cursor_week_required");}const d=await api((source==="cursor"?"cursor/summary?":"summary?")+params);if(!d||!d.totals||!Array.isArray(d.by_user)||!finite(d.totals.total_tokens))throw Error("invalid_data");return d;}
+function requestValue(s,t={}){return s==="cursor"?(finite(t.usage_records)?t.usage_records:t.requests):t.requests;}
+function fee(s,t={}){if(s==="cursor"){const complete=t.charge_complete!==false&&finite(t.charged_cents),c=complete?t.charged_cents:t.charge_subtotal_cents;return{value:finite(c)?c/100:null,label:complete?"按日用量接口金额":"接口金额小计（费用不完整）",detail:"Cursor 接口金额口径，非订阅发票或支付账单"};}const complete=finite(t.estimated_cost_usd);return{value:complete?t.estimated_cost_usd:(finite(t.priced_cost_usd)?t.priced_cost_usd:null),label:complete?"API 等值估算":"已定价观测费用小计",detail:num(t.unpriced_requests)?count(t.unpriced_requests)+" 条未知模型请求未定价":"按可用日志和价格快照估算，非订阅账单"};}
+function sourceStatus(s,d){if(!d)return{warning:true,text:state.errors[s]||"尚未取得数据"};const q=d.quality||{},p=[];if(s==="codex"){if(q.incomplete_device_periods)p.push(count(q.incomplete_device_periods)+" 个设备区间日志不完整");if(q.partial_coverage_devices)p.push(count(q.partial_coverage_devices)+" 台设备仅覆盖部分日期");if(q.missing_users?.length)p.push(count(q.missing_users.length)+" 个账号未提交");if(q.conflicted_events_excluded)p.push(count(q.conflicted_events_excluded)+" 条冲突请求已隔离");}else{if(finite(q.account_count))p.push("本次 "+count(q.success_count)+" / "+count(q.account_count)+" 个账号成功");if(q.failed_count)p.push(count(q.failed_count)+" 个账号采集失败");if(q.missing_weeks?.length)p.push("部分周未取得数据");}if(num(d.totals.unpriced_requests))p.push(count(d.totals.unpriced_requests)+" 条请求未定价");const warning=q.is_complete===false||d.totals.is_complete===false||num(q.failed_count)>0||num(d.totals.unpriced_requests)>0||d.totals.charge_complete===false;return{warning,text:p.join("；")||(warning?"覆盖不完整，仅展示观测小计":"已取得可用记录，不能证明完整账户覆盖")};}
+function makeGroups(summaries=state.summaries,includeRegistered=true){const groups=new Map(),lookup=new Map();for(const p of state.people){for(const e of(Array.isArray(p.emails)?p.emails:[p.email]).filter(Boolean))lookup.set(email(e),p);for(const a of p.accounts||[])if(a.email)lookup.set((a.source||"")+":"+email(a.email),p);}function add(s,row){const e=email(row.email);if(!e)return;const p=lookup.get(s+":"+e)||lookup.get(e),shared=row.shared===true||row.account_type==="shared"||p?.shared===true,key=shared?"shared:"+s+":"+e:p?"person:"+(p.id||p.person_id||p.email||e):"email:"+e;if(!groups.has(key))groups.set(key,{key,name:shared?e+"（共享账号）":p?.name||row.name||e,department:p?.department||row.department||"",kind:shared?"shared":p?"person":"unmapped",accounts:[],tokens:0,requests:{},costs:{},rows:{},observed:false});const g=groups.get(key);if(g.accounts.some(a=>a.source===s&&a.email===e))return;g.accounts.push({source:s,email:e});g.rows[s+":"+e]=row;g.tokens+=num(row.totals?.total_tokens);if(finite(requestValue(s,row.totals)))g.requests[s]=num(g.requests[s])+requestValue(s,row.totals);if(row.available===true||row.submitted||row.totals?.is_complete===true||num(row.totals?.total_tokens)>0||num(requestValue(s,row.totals))>0)g.observed=true;const f=fee(s,row.totals);if(finite(f.value))g.costs[s]=num(g.costs[s])+f.value;}for(const s of selectedSources())for(const row of accountRows(summaries[s]))add(s,row);if(includeRegistered&&selectedSources().includes("codex"))for(const row of state.registered)add("codex",row);return[...groups.values()].sort((a,b)=>b.tokens-a.tokens||a.name.localeCompare(b.name));}
+function filteredGroups(groups=state.groups){const search=$("member-filter").value.trim().toLowerCase(),department=$("department-filter").value;return groups.filter(g=>(!department||g.department===department)&&(!search||[g.name,...g.accounts.map(a=>a.email)].some(v=>v.toLowerCase().includes(search))));}
+function metricValue(g,m=$("share-metric").value){if(m==="tokens")return g.tokens;if(state.source==="all")return 0;return m==="cost"?num(g.costs[state.source]):num(g.requests[state.source]);}
+function denominator(m=$("share-metric").value){return currentSummaries().reduce((v,[s,d])=>v+(m==="tokens"?num(d.totals.total_tokens):m==="cost"?num(fee(s,d.totals).value):num(requestValue(s,d.totals))),0);}
+function metricText(v){return $("share-metric").value==="cost"?amount(v):compact(v);}
+function stat(label,value,detail){const e=node("article","stat-card");e.append(node("p","stat-label",label),node("p","stat-value",value),node("p","stat-detail",detail));return e;}
+function badge(text,warning=false){return node("span","badge "+(warning?"warning":"neutral"),text);}
+function table(headings,rows){const t=node("table"),h=node("thead"),hr=node("tr"),b=node("tbody");for(const v of headings){const c=node("th","",v);c.scope="col";hr.append(c);}h.append(hr);for(const values of rows){const r=node("tr");for(const v of values){const c=node("td");if(v instanceof Node)c.append(v);else c.textContent=String(v??"—");r.append(c);}b.append(r);}if(!rows.length){const r=node("tr"),c=node("td","empty-cell","所选区间暂无可显示记录。");c.colSpan=headings.length;r.append(c);b.append(r);}t.append(h,b);return t;}
+function panel(title,...children){const p=node("article","panel"),h=node("div","panel-heading"),b=node("div","panel-content");h.append(node("h2","",title));b.append(...children);p.append(h,b);return p;}
+function renderSources(){ $("source-cards").replaceChildren(...sources.map(s=>{const d=state.summaries[s],selected=selectedSources().includes(s),card=node("article","panel source-card "+s+(selected?"":" inactive-source")),h=node("div","panel-heading"),body=node("div","panel-content");h.append(node("h2","",s==="codex"?"Codex · 本地上报":"Cursor · 服务器采集"),badge(s==="codex"?"成员机器上报":"每周集中采集"));if(!d)body.append(node("p","source-empty",state.errors[s]||"连接后显示此来源数据"));else{const f=fee(s,d.totals),metrics=node("div","source-metrics");metrics.append(stat("观测 Token",compact(d.totals.total_tokens),selected?"计入当前来源筛选":"此来源不计入当前筛选"),stat(f.label,amount(f.value),f.detail));body.append(metrics,node("p","field-help",count(requestValue(s,d.totals))+(s==="codex"?" 个已去重有效响应":" 条来源用量记录")+" · 两来源请求定义分别保留"));const q=d.quality||{},last=s==="cursor"?q.last_success_at:(d.batches||[]).map(b=>b.received_at).filter(Boolean).sort().pop();body.append(node("p","field-help","最近成功"+(s==="cursor"?"采集：":"上报：")+dateTime(last)+" · "+(s==="cursor"?"覆盖截止："+dateTime(q.coverage_end):"查询截止："+dateTime(d.period_end))));const status=sourceStatus(s,d);body.append(node("p","notice "+(status.warning?"warning":"info"),status.text));}card.append(h,body);return card;}));}
+function renderShare(){
+ const m=$("share-metric").value,total=denominator(m),ranked=filteredGroups().filter(g=>g.kind==="person"||(!state.registryAvailable&&g.kind!=="shared")).sort((a,b)=>metricValue(b,m)-metricValue(a,m));
+ const top=ranked.filter(g=>metricValue(g,m)>0).slice(0,10),chosen=new Set(top.map(g=>g.key)),rest=state.groups.filter(g=>!chosen.has(g.key)),other=Math.max(0,total-top.reduce((v,g)=>v+metricValue(g,m),0));
+ $("share-title").textContent="所选区间 Top 10 "+(state.registryAvailable?"成员":"账号")+"用量占比";$("share-scope").textContent="分母："+(state.source==="all"?"两来源团队已接收 Token":labels[state.source]+(m==="cost"?"已定价金额小计":m==="requests"?"已接收"+(state.source==="codex"?"有效响应":"用量记录"):"已接收 Token"))+"；姓名搜索与部门筛选不改变分母。"+(selectedSources().some(source=>!state.summaries[source])?" 当前部分来源缺失，占比仅基于已取得记录。":"");$("share-chart").replaceChildren();
+ if(!total)empty($("share-chart"),currentSummaries().length?"暂无可计算占比的记录；分母为零时不计算百分比。":"连接后查看用量占比。");
+ else{const items=top.map(g=>({label:g.name,value:metricValue(g,m),color:color(g.key),group:g}));if(other>0)items.push({label:"Other",value:other,color:"#aebaca"});let offset=0;const ring=node("div","donut"),stops=items.map(item=>{const start=offset;offset+=item.value/total*100;return item.color+" "+start+"% "+offset+"%";});ring.style.background="conic-gradient("+stops.join(",")+")";ring.setAttribute("role","img");ring.setAttribute("aria-label",items.map(item=>item.label+" "+percent(item.value,total)).join("；"));const center=node("div","donut-center");center.append(node("strong","",metricText(total)),node("span","",m==="tokens"?"Token":m==="cost"?"来源费用小计":"来源记录"));ring.append(center);const legend=node("div","share-legend");for(const item of items){const row=node("div","share-row"),dot=node("i","legend-dot"),button=node("button","text-button share-name",item.label);dot.style.backgroundColor=item.color;button.addEventListener("click",()=>{if(item.group)openMember(item.group.key);else $("other-details").open=true;});row.append(dot,button,node("span","",metricText(item.value)),node("strong","",percent(item.value,total)));legend.append(row);}$("share-chart").append(ring,legend);}
+ const breakdown=node("div");for(const[label,groups]of[["其余已关联成员",rest.filter(g=>g.kind==="person")],["未关联账号",rest.filter(g=>g.kind==="unmapped")],["共享账号",rest.filter(g=>g.kind==="shared")]]){const section=node("div","other-group");section.append(node("h3","",label+" · "+count(groups.length)),node("p","field-help",metricText(groups.reduce((v,g)=>v+metricValue(g,m),0))));for(const g of groups){const button=node("button","account-link",g.name+" · "+(g.observed?metricText(metricValue(g,m)):"暂无可用记录"));button.addEventListener("click",()=>openMember(g.key));section.append(button);}breakdown.append(section);}const residual=Math.max(0,other-rest.reduce((sum,g)=>sum+metricValue(g,m),0));if(residual>0)breakdown.append(node("p","field-help","尚未分配到账号明细的来源小计："+metricText(residual)));if(!state.registryAvailable)breakdown.prepend(node("p","field-help","人员名册尚未接入，当前按邮箱展示 Top 10；不代表已确认的自然人。Other 仅含未进入 Top 10 的剩余账号。"));$("other-breakdown").replaceChildren(breakdown);
+}
+function renderModels(){const body=$("model-list");body.replaceChildren();let found=false;for(const[s,d]of currentSummaries())for(const model of[...(Array.isArray(d.by_model)?d.by_model:[])].sort((a,b)=>num(b.total_tokens)-num(a.total_tokens))){found=true;const row=node("div","model-item"),h=node("div","model-top"),track=node("div","model-track"),fill=node("div","model-fill "+s);h.append(node("span","",labels[s]+" · "+(model.model||"未知模型")),node("strong","",compact(model.total_tokens)));fill.style.width=Math.min(100,d.totals.total_tokens>0?num(model.total_tokens)/d.totals.total_tokens*100:0)+"%";track.append(fill);row.append(h,track,node("p","field-help","占 "+labels[s]+" "+percent(num(model.total_tokens),num(d.totals.total_tokens))));body.append(row);}if(!found)empty(body,"暂无模型记录；相同模型名称也保留平台来源。");}
+function groupStatus(g){if(Object.values(g.rows).some(r=>r.available===false))return badge(g.observed?"部分来源采集失败":"采集失败，暂无可用记录",true);if(!g.observed)return badge("未取得本期记录",true);const partial=Object.values(g.rows).some(r=>r.totals?.is_complete===false||r.incomplete_batches>0);return badge(partial?"部分记录不完整":"已取得记录",partial);}
+function renderRanking(){const total=denominator("tokens");$("ranking-table").replaceChildren(table(["姓名 / 邮箱","部门","Codex Token","Cursor Token","合计 Token","团队占比","数据状态"],filteredGroups().map(g=>{const b=node("button","text-button",g.name);b.addEventListener("click",()=>openMember(g.key));const sourceObserved=s=>g.accounts.filter(a=>a.source===s).some(a=>{const r=g.rows[s+":"+a.email];return r?.available!==false&&(r?.available===true||r?.submitted||r?.totals?.is_complete===true||num(r?.totals?.total_tokens)>0);});const sourceTotal=s=>g.accounts.filter(a=>a.source===s).reduce((v,a)=>v+num(g.rows[s+":"+a.email]?.totals?.total_tokens),0);return[b,g.department||"未配置",sourceObserved("codex")?compact(sourceTotal("codex")):"—",sourceObserved("cursor")?compact(sourceTotal("cursor")):"—",g.observed?compact(g.tokens):"—",g.observed?percent(g.tokens,total):"—",groupStatus(g)];})));}
+function renderOverview(){const data=currentSummaries(),active=state.groups.filter(g=>g.tokens>0);$("overview-stats").replaceChildren(stat("观测 Token",data.length?compact(denominator("tokens")):"—","输入＋输出；缺失来源不按零解释"),stat(state.registryAvailable?"有用量成员":"有用量邮箱",data.length?count(active.filter(g=>g.kind!=="shared").length):"—",state.registryAvailable?"按明确成员关联合并":"名册未接入，邮箱数不等同于人数"),stat("来源账号",data.length?count(state.groups.reduce((v,g)=>v+g.accounts.length,0)):"—","账号数与成员数、设备数分开"),stat("未关联 / 共享",data.length?count(state.groups.filter(g=>g.kind==="unmapped").length)+" / "+count(state.groups.filter(g=>g.kind==="shared").length):"—","分别单列，不强行归给个人"));renderSources();renderShare();renderModels();renderRanking();}
+function renderMembers(){const groups=filteredGroups();if(!groups.some(g=>g.key===state.selected))state.selected=groups[0]?.key||"";$("member-list-note").textContent=state.registryAvailable?"按明确人员关联合并来源账号":"暂无人员名册，按邮箱查看；邮箱未验证";$("member-list").replaceChildren(...groups.map(g=>{const b=node("button","member-item"+(g.key===state.selected?" active":""));b.append(node("strong","",g.name),node("span","",(g.department||"未配置部门")+" · "+(g.observed?compact(g.tokens):"未取得记录")));b.addEventListener("click",()=>{state.selected=g.key;renderMembers();});return b;}));if(!groups.length)empty($("member-list"),"暂无匹配成员或账号。");const g=groups.find(v=>v.key===state.selected);if(!g){empty($("member-detail"),"连接后选择成员或账号查看模型。");return;}renderMemberDetail(g);}
+async function renderMemberDetail(g){
+ const sequence=++state.detailSequence,body=$("member-detail");body.replaceChildren();const h=node("div","member-heading");h.append(node("h2","",g.name),badge(g.department||"未配置部门"),badge(g.kind==="person"?"已关联成员":g.kind==="shared"?"共享账号，非自然人":"未关联邮箱，身份未验证",g.kind!=="person"));const stats=node("div","stats-grid member-stats");stats.append(stat("合计观测 Token",g.observed?compact(g.tokens):"—","仅统一 Token 口径后汇总"),stat("团队占比",g.observed?percent(g.tokens,denominator("tokens")):"—","固定为所选来源全部团队记录"),stat("来源账号",count(g.accounts.length),"不等同于设备或人员数量"));body.append(h,stats);
+ const cards=node("div","source-grid"),models=panel("按平台查看模型明细",node("p","empty-message","正在读取所选账号模型…"));
+ for(const s of selectedSources()){const accounts=g.accounts.filter(a=>a.source===s);if(!accounts.length)continue;const rows=accounts.map(a=>g.rows[s+":"+a.email]),hasData=rows.some(r=>r.available!==false&&finite(r.totals?.total_tokens)),tokens=rows.reduce((v,r)=>v+num(r.totals?.total_tokens),0),box=panel(labels[s],node("p","account-email",accounts.map(a=>a.email).join(" · ")),node("p","source-value",hasData?compact(tokens)+" Token":"暂无可用记录"),node("p","field-help",count(g.requests[s])+(s==="codex"?" 个有效响应":" 条用量记录")+" · "+amount(g.costs[s])+" "+(s==="codex"?"API 等值估算":"接口金额小计")));if(rows.some(r=>r.available===false))box.append(node("p","notice warning inset-notice","此来源采集失败，尚无可用快照；未知数据不按零用量展示。"));if(rows.some(r=>r.totals?.is_complete===false))box.append(node("p","notice warning inset-notice","部分日志或记录不完整，仅展示观测小计。"));const devices=rows.flatMap(r=>Array.isArray(r.devices)?r.devices:[]);if(s==="codex"&&devices.length)box.append(node("p","field-help inset-notice","设备标识："+[...new Set(devices.map(d=>d.device_id||d.id).filter(Boolean))].join("、")));if(s==="cursor")box.append(node("p","field-help inset-notice","服务器每周集中采集，成员无需安装或上报。"));cards.append(box);}
+ body.append(cards,models,panel("账号关联与数据来源",table(["来源","账号 / 邮箱","归属状态"],g.accounts.map(a=>[labels[a.source],a.email,g.kind==="person"?"明确关联":g.kind==="shared"?"共享账号":"待人员关联"])),node("p","field-help","当前邮箱不能证明历史日志归属。模型与请求口径按平台分别保留。")));
+ const rows=[];await Promise.all(g.accounts.map(async a=>{const existing=g.rows[a.source+":"+a.email];if(existing.available===false){rows.push([labels[a.source],"采集失败，模型记录不可得","—","—","—","—","—","—"]);return;}try{let modelRows=Array.isArray(existing.models)?existing.models:existing.by_model;if(!Array.isArray(modelRows)&&a.source==="codex"){const p=periodParams();p.set("email",a.email);modelRows=(await summaryFor("codex",p)).by_model;}for(const m of modelRows||[])rows.push([labels[a.source],m.model||"未知模型",count(requestValue(a.source,m)),compact(m.input_tokens),compact(m.cached_input_tokens),compact(m.output_tokens),compact(m.total_tokens),amount(fee(a.source,m).value)]);}catch(e){if(e.name!=="AbortError")rows.push([labels[a.source],"模型记录暂不可得","—","—","—","—","—","—"]);}}));if(sequence!==state.detailSequence||state.page!=="members")return;models.querySelector(".panel-content").replaceChildren(table(["平台","模型","来源请求数","输入 Token","其中缓存","输出 Token","合计 Token","来源费用小计"],rows),node("p","field-help","缓存已包含在输入中，不重复相加。接口缺少的字段显示 —；两平台费用不合并。"));
+}
+function openMember(key){state.selected=key;showPage("members");}
+function reasonText(r){return({source_starts_after_period:"日志未覆盖统计区间起点",no_files:"没有本地日志",no_canonical_usage_records:"没有可去重的用量记录",conflicting_response_ids:"请求记录冲突",unreadable_files:"部分日志无法读取",malformed_lines:"部分日志损坏",usage_records_without_response_id:"部分请求缺少去重标识",invalid_usage_timestamps:"部分请求时间无效",invalid_usage_records:"部分记录无效"})[r]||"部分日志或记录不可用";}
+function renderSync(){const s=state.syncSource,d=state.summaries[s];document.querySelectorAll("[data-sync]").forEach(b=>b.classList.toggle("active",b.dataset.sync===s));$("sync-intro").textContent=s==="codex"?"仅显示已抵达服务器的 Codex 上报；离线未送达请求无法在此确认。批次数、接收条数不等于有效用量。":"Cursor 在 65 服务器每周集中采集，成员无需上报。任务执行成功与自然周覆盖完整是不同状态。";const body=$("sync-content");if(!d){empty(body,state.errors[s]||"尚未取得此来源同步记录。");return;}if(s==="codex"){const batches=Array.isArray(d.batches)?d.batches:[],stats=node("div","stats-grid");stats.append(stat("当前返回批次",count(batches.length),"仅为接口近期记录，不代表全量历史"),stat("全重复批次",count(batches.filter(b=>b.new===0&&b.duplicates>0&&!b.conflicts).length),"正常接收，不会重复计量"),stat("隔离冲突请求",count(d.quality?.conflicted_events_excluded),"按请求去重，不累加各批次重复冲突"),stat("日志不完整区间",count(d.quality?.incomplete_device_periods),"缺日志与传输成功是不同状态"));const rows=batches.map(b=>{const detail=node("details"),h=node("summary","",b.is_complete===false?"日志不完整":"已接收");detail.append(h);if(b.is_complete===false)detail.append(node("p","field-help",(b.incomplete_reasons||[]).map(reasonText).join("；")||"部分日志或记录不可用"));return[dateTime(b.received_at),b.email,b.device_id||"未提供",b.period_start&&b.period_end?dateTime(b.period_start)+" → "+dateTime(b.period_end):"接口未提供",count(b.received),count(b.new),count(b.duplicates),count(b.conflicts),detail];});body.replaceChildren(stats,panel("Codex 已接收上报",table(["接收时间","邮箱","设备标识","报告区间（不含结束）","接收","新增","重复","冲突","日志状态"],rows)));}else{const q=d.quality||{},runs=Array.isArray(d.sync_runs)?d.sync_runs:[],stats=node("div","stats-grid");stats.append(stat("最近成功采集",dateTime(q.last_success_at),"最近成功快照的采集时间"),stat("数据覆盖截止",dateTime(q.coverage_end),"数据时间不等于运行时间"),stat("成功 / 账号",count(q.success_count)+" / "+count(q.account_count),"账号数不能等同于成员数"),stat("采集失败账号",count(q.failed_count),"失败或缺记录不视为零用量"));body.replaceChildren(stats,panel("Cursor 集中采集记录",table(["采集时间","报告自然周（不含结束）","快照状态","成功账号","失败账号"],runs.map(r=>[dateTime(r.captured_at),r.period_start&&r.period_end?String(r.period_start).slice(0,10)+" → "+String(r.period_end).slice(0,10):"未提供",r.complete===true&&r.pagination_complete!==false&&num(r.failed)===0?"完整快照":r.pagination_complete===false?"部分快照 · 分页未完成":"部分快照 · 覆盖不完整",count(r.success),count(r.failed)]))));}}
+function renderPeople(){const rows=filteredGroups().flatMap(g=>g.accounts.map(a=>[g.kind==="person"?g.name:"尚未关联",g.department||"未配置",labels[a.source],a.email,g.kind==="shared"?"共享账号，独立统计":g.kind==="person"?"明确关联":"待关联，按邮箱展示"]));$("people-content").replaceChildren(node("div","notice "+(state.registryAvailable?"info":"warning"),state.registryAvailable?"按明确关联汇总成员，同名人员不会自动合并，共享账号独立保留。":"人员名册接口尚未接入。当前仅显示真实来源账号，姓名与部门未配置；不会猜测归属或把账号数当作人数。"),panel("人员与来源账号",table(["姓名","部门","来源","邮箱 / 账号","关联状态"],rows)),panel("关联规则",node("p","scope-note","一位成员可关联多个来源账号；共享账号不归入个人。未关联与共享用量保留在团队分母中。人员导入和修改需服务端映射接口支持，当前不伪造保存或导入成功。")));}
+async function mapLimit(items,limit,worker){let next=0;await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const i=next++;if(i>=items.length)return;await worker(items[i]);}}));}
+async function loadWeekly(force=false){if(!adminKey||!currentSummaries().length){for(const id of["weekly-total","weekly-share","weekly-member-chart"])empty($(id),"取得所选来源数据后查看周趋势。");return;}const last=monday(addDays($("end-date").value,-1)),key=state.source+":"+last;if(!force&&state.weeklyKey===key){if(state.weekly)renderWeekly();return;}const sequence=++state.weeklySequence;state.weeklyKey=key;for(const id of["weekly-total","weekly-share","weekly-member-chart"])empty($(id),"正在读取各周真实记录…");const weeks=Array.from({length:8},(_,i)=>{const start=addDays(last,(i-7)*7);return{start,end:addDays(start,7),summaries:{},missing:[]};});await mapLimit(weeks.flatMap(week=>selectedSources().map(source=>({week,source}))),4,async({week,source})=>{if(sequence!==state.weeklySequence)return;try{week.summaries[source]=await summaryFor(source,new URLSearchParams({start:week.start,end:week.end}));}catch(e){week.missing.push(source);}});if(sequence!==state.weeklySequence)return;state.weekly=weeks;renderWeekly();}
+function weeklyRows(){return(state.weekly||[]).map(w=>({...w,missing:[...new Set([...w.missing,...Object.entries(w.summaries).filter(([,d])=>Array.isArray(d.quality?.missing_weeks)&&d.quality.missing_weeks.length).map(([source])=>source)])],groups:makeGroups(w.summaries,false),total:selectedSources().reduce((v,s)=>v+num(w.summaries[s]?.totals?.total_tokens),0)}));}
+function barChart(weeks,values,denominators,member=false){const chart=node("div","weekly-bars"),maximum=Math.max(1,...values);weeks.forEach((w,i)=>{const column=node("div","week-column"),track=node("div","week-track"),fill=node("div","week-fill");fill.style.height=values[i]/maximum*100+"%";fill.style.backgroundColor=member?color($("weekly-member").value):"#377fe8";track.append(fill);column.append(node("strong","week-value",w.missing.length?"来源缺失":compact(values[i])),track,node("span","week-label",w.start.slice(5).replace("-","/")),node("span","week-quality",w.start>=monday(today())?"本周未结束":w.missing.length?"不按零计算":Object.values(w.summaries).some(d=>d.quality?.is_complete===false||d.totals?.is_complete===false)?"覆盖不完整":"已接收记录"));if(denominators)column.title=w.missing.length?"分母不完整，团队占比不可得":percent(values[i],denominators[i]);chart.append(column);});return chart;}
+function renderWeekly(){if(!state.weekly)return;const weeks=weeklyRows(),all=new Map();for(const w of weeks)for(const g of w.groups){const old=all.get(g.key);all.set(g.key,{...g,tokens:num(old?.tokens)+g.tokens});}const ranked=[...all.values()].sort((a,b)=>b.tokens-a.tokens),top=ranked.filter(g=>g.kind==="person"||(!state.registryAvailable&&g.kind!=="shared")).slice(0,5);$("weekly-range-title").textContent=weeks[0].start+" → "+weeks.at(-1).end+"（北京时间，不含结束日）";$("weekly-total").replaceChildren(barChart(weeks,weeks.map(w=>w.total)));const chart=node("div","weekly-bars stacked-bars");for(const w of weeks){const column=node("div","week-column"),track=node("div","week-track stacked-track");let chosen=0;for(const g of top){const v=w.missing.length?0:w.groups.find(x=>x.key===g.key)?.tokens||0;chosen+=v;const segment=node("div","stack-segment");segment.style.height=(w.total>0?v/w.total*100:0)+"%";segment.style.backgroundColor=color(g.key);segment.title=g.name+" · "+percent(v,w.total);track.append(segment);}const rest=node("div","stack-segment");rest.style.height=(w.missing.length?100:w.total>0?Math.max(0,w.total-chosen)/w.total*100:0)+"%";rest.style.backgroundColor="#aebaca";rest.title=w.missing.length?"来源缺失，团队占比不可得":"Other：其余成员、未关联与共享账号";track.append(rest);column.append(track,node("span","week-label",w.start.slice(5).replace("-","/")),node("span","week-quality",w.missing.length?"占比不可得":w.total?"":"分母为零"));chart.append(column);}const legend=node("div","chart-legend");for(const g of top){const b=node("button","legend-button",g.name),dot=node("i","legend-dot");dot.style.backgroundColor=color(g.key);b.prepend(dot);b.addEventListener("click",()=>{$("weekly-member").value=g.key;renderWeeklyMember();});legend.append(b);}legend.append(node("span","field-help","灰色：Other"));$("weekly-share").replaceChildren(chart,legend);const select=$("weekly-member"),previous=select.value;select.replaceChildren(...ranked.filter(g=>filteredGroups([g]).length).map(g=>{const option=node("option","",g.name);option.value=g.key;return option;}));if([...select.options].some(o=>o.value===previous))select.value=previous;renderWeeklyMember();}
+function renderWeeklyMember(){const weeks=weeklyRows(),key=$("weekly-member").value;if(!key){empty($("weekly-member-chart"),"暂无匹配成员或账号。");return;}const values=weeks.map(w=>w.groups.find(g=>g.key===key)?.tokens||0);$("weekly-member-chart").replaceChildren(barChart(weeks,values,weeks.map(w=>w.total),true),node("p","field-help","柱高为观测 Token，悬停查看该周团队占比；缺失来源或未上报不代表已核实的零用量。"));}
+function renderAll(){state.groups=makeGroups();const department=$("department-filter").value,departments=[...new Set(state.groups.map(g=>g.department).filter(Boolean))].sort();$("department-filter").replaceChildren(...["",...departments].map(v=>{const o=node("option","",v||"全部部门");o.value=v;return o;}));if(departments.includes(department))$("department-filter").value=department;const select=$("share-metric");for(const o of select.options)o.disabled=state.source==="all"&&o.value!=="tokens";if(state.source==="all")select.value="tokens";renderOverview();renderPeople();renderSync();if(state.page==="members")renderMembers();if(state.page==="weekly")loadWeekly();$("export-button").disabled=!currentSummaries().length;}
+async function loadData(){if(!adminKey){notice("请输入管理员密钥连接统计空间。","info");return;}let p;try{p=periodParams();}catch(e){notice(errorText(e),"warning");return;}const sequence=++state.sequence;++state.detailSequence;++state.weeklySequence;if(state.controller)state.controller.abort();state.controller=new AbortController();state.summaries={};state.errors={};state.registered=[];state.people=[];state.registryAvailable=false;state.weekly=null;state.weeklyKey="";$("conflict-banner").hidden=true;renderAll();notice("正在读取两来源的真实记录…","info");$("refresh-button").disabled=true;const results=await Promise.allSettled([summaryFor("codex",p),summaryFor("cursor",p),api("users")]);if(sequence!==state.sequence)return;sources.forEach((s,i)=>{if(results[i].status==="fulfilled")state.summaries[s]=results[i].value;else state.errors[s]=errorText(results[i].reason);});if(results[2].status==="fulfilled"){state.registered=Array.isArray(results[2].value.users)?results[2].value.users:[];state.people=Array.isArray(results[2].value.people)?results[2].value.people:[];state.registryAvailable=Array.isArray(results[2].value.people);}else{state.registered=[];state.people=[];state.registryAvailable=false;}const ready=Object.keys(state.summaries).length>0;connection(ready);$("refresh-button").disabled=false;if(!ready){const unauthorized=results.slice(0,2).some(r=>r.status==="rejected"&&r.reason.message==="unauthorized");if(unauthorized)saveKey("");renderAll();notice(unauthorized?"管理员密钥无效或权限不足，请重新连接。":"两来源均未取得数据；没有以零用量代替失败。","warning");return;}$("admin-key").value="";$("last-updated").textContent="页面更新于 "+dateTime(new Date().toISOString())+" · 北京时间";notice(($("end-date").value>today()?"所选周尚未结束，当前仅为截至已接收数据的观测小计。 ":"")+sources.map(s=>labels[s]+"："+sourceStatus(s,state.summaries[s]).text).join("；"),$("end-date").value>today()||sources.some(s=>sourceStatus(s,state.summaries[s]).warning)?"warning":"info");const conflicts=num(state.summaries.codex?.quality?.conflicted_events_excluded);$("conflict-banner").hidden=!conflicts;$("conflict-banner").textContent="Codex 有 "+count(conflicts)+" 条冲突请求已隔离，不计入有效用量；各批次重复观察到的同一冲突不可累加。";renderAll();}
+function showPage(page){if(!titles[page])page="overview";state.page=page;++state.detailSequence;for(const name of Object.keys(titles))$("page-"+name).hidden=name!==page;document.querySelectorAll("[data-page]").forEach(b=>{const active=b.dataset.page===page;b.classList.toggle("active",active);if(active)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current");});$("page-title").textContent=titles[page];$("page-subtitle").textContent=({overview:"已接收的可用记录，多账号关联，按来源保留口径。",weekly:"观察每周变化，团队分母不随姓名或部门筛选改变。",members:"跨平台查看个人用量，原始账号分别保留。",sync:"Codex 成员本地上报；Cursor 服务器每周集中采集。",people:"明确关联姓名与部门，同名不会自动合并。"})[page];if(page==="members")renderMembers();if(page==="weekly")loadWeekly();if(page==="sync")renderSync();if(page==="people")renderPeople();}
+function exportCsv(){const rows=[["姓名或邮箱","部门","来源","账号邮箱","Token","来源请求数","费用小计USD","费用口径","统计开始","统计结束不含"]];for(const g of filteredGroups())for(const a of g.accounts){const t=g.rows[a.source+":"+a.email]?.totals||{},f=fee(a.source,t);rows.push([g.name,g.department,labels[a.source],a.email,finite(t.total_tokens)?t.total_tokens:"",finite(requestValue(a.source,t))?requestValue(a.source,t):"",finite(f.value)?f.value:"",f.label,$("start-date").value,$("end-date").value]);}const escape=v=>{let s=String(v??"");if(/^[\s]*[=+\-@]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};const blob=new Blob(["\ufeff"+rows.map(r=>r.map(escape).join(",")).join("\r\n")],{type:"text/csv;charset=utf-8"}),url=URL.createObjectURL(blob),a=node("a");a.href=url;a.download="team-usage-"+$("start-date").value+".csv";document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+$("access-form").addEventListener("submit",e=>{e.preventDefault();saveKey($("admin-key").value.trim());loadData();});
+$("disconnect-button").addEventListener("click",()=>{++state.sequence;++state.detailSequence;++state.weeklySequence;if(state.controller)state.controller.abort();saveKey("");state.summaries={};state.errors={};state.registered=[];state.people=[];state.registryAvailable=false;state.weekly=null;state.weeklyKey="";$("admin-key").value="";$("conflict-banner").hidden=true;$("last-updated").textContent="尚未同步";connection(false);renderAll();notice("已断开，当前标签页管理员密钥已清除。","info");});
+$("refresh-button").addEventListener("click",loadData);$("export-button").addEventListener("click",exportCsv);
+document.querySelectorAll("[data-page]").forEach(b=>b.addEventListener("click",()=>showPage(b.dataset.page)));document.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click",()=>showPage(b.dataset.go)));
+document.querySelectorAll("[data-period]").forEach(b=>b.addEventListener("click",()=>{setPeriod(b.dataset.period);if(adminKey)loadData();}));for(const id of["start-date","end-date"])$(id).addEventListener("change",()=>{document.querySelectorAll("[data-period]").forEach(b=>b.classList.remove("active"));if(adminKey)loadData();});
+document.querySelectorAll("[data-source]").forEach(b=>b.addEventListener("click",()=>{state.source=b.dataset.source;document.querySelectorAll("[data-source]").forEach(v=>v.classList.toggle("active",v===b));state.weekly=null;state.weeklyKey="";++state.weeklySequence;renderAll();}));document.querySelectorAll("[data-sync]").forEach(b=>b.addEventListener("click",()=>{state.syncSource=b.dataset.sync;renderSync();}));
+$("department-filter").addEventListener("change",renderAll);$("member-filter").addEventListener("input",renderAll);$("share-metric").addEventListener("change",renderShare);$("weekly-member").addEventListener("change",renderWeeklyMember);$("weekly-reload").addEventListener("click",()=>loadWeekly(true));
+setPeriod("last-week");connection(false);renderAll();showPage("overview");if(adminKey)loadData();
 })();

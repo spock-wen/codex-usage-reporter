@@ -18,10 +18,10 @@ case "$MODE" in none|bootstrap|tls) ;; *) echo "Invalid nginx mode." >&2; exit 1
 case "$SOURCE" in /opt/codex-usage|/opt/codex-usage/*) echo "Source must be a separate staging directory." >&2; exit 1 ;; esac
 ASSETS="$SOURCE/deploy"
 MANIFEST="$ASSETS/source-manifest.txt"
-for item in server.py collector.py prices.json web/index.html web/app.js web/style.css; do
+for item in server.py collector.py cursor_weekly.py prices.json web/index.html web/app.js web/style.css; do
     test -f "$SOURCE/$item" || { echo "Missing required source: $item" >&2; exit 1; }
 done
-for item in source-manifest.txt codex-usage.service nginx-bootstrap.conf nginx.conf nginx-legacy.conf reload-nginx.sh; do
+for item in source-manifest.txt codex-usage.service nginx-bootstrap.conf nginx.conf nginx-legacy.conf reload-nginx.sh cursor-weekly.sh; do
     test -f "$ASSETS/$item" || { echo "Missing deployment asset: $item" >&2; exit 1; }
 done
 if [ -e /opt/codex-usage/current ] && [ ! -L /opt/codex-usage/current ]; then
@@ -110,6 +110,15 @@ for existing in /etc/systemd/system/codex-usage.service "$AVAILABLE" "$LEGACY_AV
         cp -a -- "$existing" "$BACKUP/$(basename "$existing")"
     fi
 done
+HERMES_SCRIPT_DIR=/root/.hermes/scripts
+HERMES_SCRIPT="$HERMES_SCRIPT_DIR/codex-usage-cursor-weekly.sh"
+if [ -e "$HERMES_SCRIPT" ] || [ -L "$HERMES_SCRIPT" ]; then
+    if [ ! -f "$HERMES_SCRIPT" ] || ! grep -Fq 'Managed by codex-usage-reporter.' "$HERMES_SCRIPT"; then
+        echo "Refusing to replace an unmanaged Hermes script: $HERMES_SCRIPT" >&2
+        exit 1
+    fi
+    cp -a -- "$HERMES_SCRIPT" "$BACKUP/codex-usage-cursor-weekly.sh"
+fi
 
 if [ ! -e /etc/codex-usage/server.json ]; then
     /usr/bin/python3 - <<'PY'
@@ -137,10 +146,12 @@ PY
 DEST="/opt/codex-usage/releases/$RELEASE"
 install -d -m 0755 "$DEST/web"
 # Fixed allowlist: never copy .local, auth files, reports, tests or a database.
-for item in server.py collector.py prices.json web/index.html web/app.js web/style.css; do
+for item in server.py collector.py cursor_weekly.py prices.json web/index.html web/app.js web/style.css; do
     install -o root -g root -m 0644 "$SOURCE/$item" "$DEST/$item"
 done
 install -m 0644 "$MANIFEST" "$DEST/source-manifest.txt"
+install -d -o root -g root -m 0700 "$HERMES_SCRIPT_DIR"
+install -o root -g root -m 0700 "$ASSETS/cursor-weekly.sh" "$HERMES_SCRIPT"
 ln -s -- "$DEST" "/opt/codex-usage/current.$RELEASE"
 mv -Tf -- "/opt/codex-usage/current.$RELEASE" /opt/codex-usage/current
 install -m 0644 "$ASSETS/codex-usage.service" /etc/systemd/system/codex-usage.service

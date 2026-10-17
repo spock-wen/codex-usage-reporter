@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+import uuid
 from urllib.parse import parse_qs, urlsplit
 from collector import BEIJING, TOKEN_FIELDS, estimate_cost_parts, load_prices, parse_time, usage_values
 
@@ -34,6 +35,8 @@ class Invalid(ValueError):
 class AlreadyExists(ValueError):
     pass
 class EnrollmentConflict(ValueError):
+    pass
+class CursorConflict(ValueError):
     pass
 
 def now_iso():
@@ -138,6 +141,98 @@ def validate_package(package):
     return {'batch_id': supplied, 'period_start': lo.isoformat(), 'period_end': hi.isoformat(), 'events': normalized,
             'is_complete': complete, 'data_status': status, 'incomplete_reasons': reasons, 'quality': diagnostics}
 
+def validate_cursor_snapshot(payload):
+    """Validate a complete weekly aggregate from the centrally managed Cursor collector.
+
+    Cursor's current usage-event feed has no stable request id. We therefore accept
+    only full per-account week snapshots and replace that account/week on re-run.
+    """
+    required = {'schema_version', 'kind', 'run_id', 'period_start', 'period_end', 'captured_at', 'pagination_complete', 'accounts'}
+    if not isinstance(payload, dict) or set(payload) != required or payload.get('schema_version') != 1 or payload.get('kind') != 'cursor_weekly_snapshot':
+        raise Invalid('invalid Cursor snapshot')
+    try:
+        run_id = str(uuid.UUID(payload['run_id']))
+    except (ValueError, TypeError, AttributeError):
+        raise Invalid('invalid Cursor run id') from None
+    lo, hi = parse_time(payload['period_start']), parse_time(payload['period_end'])
+    captured = parse_time(payload['captured_at'])
+    if lo.weekday() != 0 or any((lo.hour, lo.minute, lo.second, lo.microsecond)) or hi - lo != timedelta(days=7):
+        raise Invalid('Cursor snapshot must cover one Beijing natural week')
+    if lo.utcoffset() != BEIJING.utcoffset(lo) or hi.utcoffset() != BEIJING.utcoffset(hi) or captured.utcoffset() != BEIJING.utcoffset(captured):
+        raise Invalid('Cursor snapshot timestamps must use Beijing time')
+    if type(payload['pagination_complete']) is not bool or not isinstance(payload['accounts'], list) or not 1 <= len(payload['accounts']) <= 10000:
+        raise Invalid('invalid Cursor snapshot accounts')
+    if captured < hi:
+        raise Invalid('Cursor snapshot must be collected after the reporting week')
+    accounts, emails = [], set()
+    for account in payload['accounts']:
+        if not isinstance(account, dict) or 'email' not in account or type(account.get('ok')) is not bool or type(account.get('shared')) is not bool:
+            raise Invalid('invalid Cursor account')
+        email = normalize_email(account['email'])
+        if email in emails:
+            raise Invalid('duplicate Cursor account')
+        emails.add(email)
+        if not account['ok']:
+            if set(account) != {'email', 'ok', 'shared', 'error_code'} or not isinstance(account['error_code'], str) or not re.fullmatch(r'[a-z_]{1,60}', account['error_code']):
+                raise Invalid('invalid Cursor account failure')
+            accounts.append({'email': email, 'ok': False, 'shared': account['shared'], 'error_code': account['error_code']})
+            continue
+        fields = {'email', 'ok', 'shared', 'usage_records', 'total_tokens', 'charged_cents', 'charge_records', 'unpriced_records', 'models', 'by_day'}
+        if set(account) != fields:
+            raise Invalid('invalid Cursor account fields')
+        counts = {}
+        for key in ('usage_records', 'total_tokens', 'charge_records', 'unpriced_records'):
+            value = account[key]
+            if type(value) is not int or not 0 <= value <= 10**15:
+                raise Invalid('invalid Cursor account count')
+            counts[key] = value
+        charged = account['charged_cents']
+        if charged is not None and (type(charged) is not int or not 0 <= charged <= 10**15):
+            raise Invalid('invalid Cursor charged amount')
+        if not isinstance(account['models'], list) or len(account['models']) > 500 or not isinstance(account['by_day'], list) or len(account['by_day']) > 7:
+            raise Invalid('invalid Cursor breakdown')
+        models, model_names = [], set()
+        for model in account['models']:
+            if not isinstance(model, dict) or set(model) != {'model', 'total_tokens', 'usage_records'}:
+                raise Invalid('invalid Cursor model row')
+            name = model['model']
+            if not isinstance(name, str) or not MODEL.fullmatch(name) or name in model_names:
+                raise Invalid('invalid Cursor model')
+            model_names.add(name)
+            if type(model['total_tokens']) is not int or not 0 <= model['total_tokens'] <= 10**15 or type(model['usage_records']) is not int or not 0 <= model['usage_records'] <= 10**15:
+                raise Invalid('invalid Cursor model totals')
+            models.append({'model': name, 'total_tokens': model['total_tokens'], 'usage_records': model['usage_records']})
+        days, day_names = [], set()
+        for day in account['by_day']:
+            if not isinstance(day, dict) or set(day) != {'day', 'total_tokens', 'usage_records'}:
+                raise Invalid('invalid Cursor day row')
+            date = day['day']
+            try:
+                day_start = datetime.strptime(date, '%Y-%m-%d').replace(tzinfo=BEIJING)
+            except (ValueError, TypeError):
+                raise Invalid('invalid Cursor day') from None
+            if date in day_names or not lo <= day_start < hi:
+                raise Invalid('Cursor day outside week')
+            day_names.add(date)
+            if type(day['total_tokens']) is not int or not 0 <= day['total_tokens'] <= 10**15 or type(day['usage_records']) is not int or not 0 <= day['usage_records'] <= 10**15:
+                raise Invalid('invalid Cursor day totals')
+            days.append({'day': date, 'total_tokens': day['total_tokens'], 'usage_records': day['usage_records']})
+        if sum(m['total_tokens'] for m in models) != counts['total_tokens'] or sum(m['usage_records'] for m in models) != counts['usage_records']:
+            raise Invalid('Cursor model totals do not reconcile')
+        if sum(d['total_tokens'] for d in days) != counts['total_tokens'] or sum(d['usage_records'] for d in days) != counts['usage_records']:
+            raise Invalid('Cursor daily totals do not reconcile')
+        if (charged is None) != (counts['charge_records'] == 0):
+            raise Invalid('Cursor charge totals do not reconcile')
+        if counts['charge_records'] + counts['unpriced_records'] != counts['usage_records']:
+            raise Invalid('Cursor charge coverage does not reconcile')
+        accounts.append({'email': email, 'ok': True, 'shared': account['shared'], **counts,
+                         'charged_cents': charged, 'models': models, 'by_day': sorted(days, key=lambda row: row['day'])})
+    complete = payload['pagination_complete'] and all(a['ok'] for a in accounts)
+    normalized = {'schema_version': 1, 'kind': 'cursor_weekly_snapshot', 'run_id': run_id,
+        'period_start': lo.isoformat(), 'period_end': hi.isoformat(), 'captured_at': captured.isoformat(),
+        'pagination_complete': payload['pagination_complete'], 'accounts': accounts}
+    return normalized, complete
+
 class UsageTotal:
     def __init__(self):
         self.counts = dict.fromkeys(COUNT_FIELDS, 0)
@@ -183,7 +278,28 @@ class Store:
             CREATE TABLE IF NOT EXISTS conflict_observations (event_id TEXT NOT NULL REFERENCES usage_events(event_id), email TEXT NOT NULL, stamp REAL NOT NULL, PRIMARY KEY(event_id,email,stamp));
             CREATE TABLE IF NOT EXISTS batches (id INTEGER PRIMARY KEY, batch_id TEXT NOT NULL, email TEXT NOT NULL REFERENCES users(email), device_id TEXT NOT NULL, period_start REAL NOT NULL, period_end REAL NOT NULL, received_at TEXT NOT NULL, received INTEGER NOT NULL, new_count INTEGER NOT NULL, duplicates INTEGER NOT NULL, conflicts INTEGER NOT NULL, rejected INTEGER NOT NULL DEFAULT 0, is_complete INTEGER NOT NULL, data_status TEXT NOT NULL, quality TEXT NOT NULL, incomplete_reasons TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS batches_period ON batches(period_start,period_end,email);
+            CREATE TABLE IF NOT EXISTS cursor_runs (run_id TEXT PRIMARY KEY, period_start REAL NOT NULL, period_end REAL NOT NULL, captured_at TEXT NOT NULL, captured_epoch REAL NOT NULL, payload_hash TEXT NOT NULL, pagination_complete INTEGER NOT NULL, expected_count INTEGER NOT NULL, success_count INTEGER NOT NULL, failed_count INTEGER NOT NULL, complete INTEGER NOT NULL, applied INTEGER NOT NULL DEFAULT 1);
+            CREATE TABLE IF NOT EXISTS cursor_run_accounts (run_id TEXT NOT NULL REFERENCES cursor_runs(run_id), email TEXT NOT NULL, ok INTEGER NOT NULL, shared INTEGER NOT NULL, error_code TEXT, PRIMARY KEY(run_id,email));
+            CREATE TABLE IF NOT EXISTS cursor_weekly_accounts (period_start REAL NOT NULL, period_end REAL NOT NULL, email TEXT NOT NULL, shared INTEGER NOT NULL, total_tokens INTEGER NOT NULL, usage_records INTEGER NOT NULL, charged_cents INTEGER, charge_records INTEGER NOT NULL, unpriced_records INTEGER NOT NULL, models TEXT NOT NULL, by_day TEXT NOT NULL, last_success_at TEXT NOT NULL, last_success_epoch REAL NOT NULL, source_run_id TEXT NOT NULL REFERENCES cursor_runs(run_id), PRIMARY KEY(period_start,period_end,email));
             ''')
+            # Keep upgrades additive for databases created by an earlier unified
+            # dashboard release; timestamps compare numerically across ISO forms.
+            for table, column, definition in (
+                ('cursor_runs', 'captured_epoch', 'REAL NOT NULL DEFAULT 0'),
+                ('cursor_runs', 'applied', 'INTEGER NOT NULL DEFAULT 1'),
+                ('cursor_weekly_accounts', 'last_success_epoch', 'REAL NOT NULL DEFAULT 0'),
+            ):
+                if column not in {row['name'] for row in conn.execute(f'PRAGMA table_info({table})')}:
+                    conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+            # Backfill rows created before numeric capture epochs were added.
+            for row in conn.execute("SELECT run_id,captured_at FROM cursor_runs WHERE captured_epoch=0").fetchall():
+                conn.execute('UPDATE cursor_runs SET captured_epoch=? WHERE run_id=?',
+                             (parse_time(row['captured_at']).timestamp(), row['run_id']))
+            for row in conn.execute("SELECT period_start,period_end,email,last_success_at FROM cursor_weekly_accounts WHERE last_success_epoch=0").fetchall():
+                conn.execute('UPDATE cursor_weekly_accounts SET last_success_epoch=? WHERE period_start=? AND period_end=? AND email=?',
+                             (parse_time(row['last_success_at']).timestamp(), row['period_start'], row['period_end'], row['email']))
+            conn.execute('CREATE INDEX IF NOT EXISTS cursor_runs_period ON cursor_runs(period_start,period_end,applied,captured_epoch)')
+            conn.execute('CREATE INDEX IF NOT EXISTS cursor_accounts_period ON cursor_weekly_accounts(period_start,period_end,email)')
     @contextmanager
     def connect(self):
         conn = sqlite3.connect(self.db, timeout=30)
@@ -347,6 +463,170 @@ class Store:
         batches = [{'received_at': r['received_at'], 'email': r['email'], 'device_id': r['device_id'], 'received': r['received'], 'new': r['new_count'], 'duplicates': r['duplicates'], 'conflicts': r['conflicts'], 'rejected': r['rejected'], 'is_complete': bool(r['is_complete']), 'data_status': r['data_status'], 'incomplete_reasons': json.loads(r['incomplete_reasons'])} for r in batch_rows[:100]]
         return {'period_start': lo.isoformat(), 'period_end': hi.isoformat(), 'timezone': 'Asia/Shanghai', 'identity_assurance': 'self_reported', 'totals': overall.output(incomplete), 'by_user': user_rows, 'by_day': [{'day': k, **v.output(incomplete)} for k, v in sorted(by_day.items())], 'by_model': [{'model': k, **v.output(incomplete)} for k, v in sorted(by_model.items())], 'conflicts': conflicts, 'batches': batches, 'quality': {'conflicted_events_excluded': len(conflict_rows), 'incomplete_device_periods': sum(not r['is_complete'] for r in latest.values()), 'partial_coverage_devices': len(partial_devices), 'missing_users': [u['email'] for u in user_rows if u['active'] and not u['submitted']], 'is_complete': not incomplete, 'account_coverage': 'available uploaded local events only; a submission does not prove full historical coverage'}, 'pricing': {'currency': prices.get('currency', 'USD'), 'basis': prices.get('basis', 'standard_api_equivalent'), 'verified_at': prices.get('verified_at'), 'source': prices.get('source'), 'sha256': token_hash(json.dumps(prices, sort_keys=True, ensure_ascii=True)), 'notes': ['Server recomputes configured API-equivalent costs; subscription billing and quota are separate.']}}
 
+    def ingest_cursor_snapshot(self, payload):
+        snapshot, complete = validate_cursor_snapshot(payload)
+        lo, hi = parse_time(snapshot['period_start']).timestamp(), parse_time(snapshot['period_end']).timestamp()
+        captured = snapshot['captured_at']
+        captured_epoch = parse_time(captured).timestamp()
+        digest = token_hash(canonical_json(snapshot))
+        good = [row for row in snapshot['accounts'] if row['ok']]
+        bad = [row for row in snapshot['accounts'] if not row['ok']]
+        with self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            previous = conn.execute('SELECT payload_hash,applied FROM cursor_runs WHERE run_id=?', (snapshot['run_id'],)).fetchone()
+            if previous:
+                if not hmac.compare_digest(previous['payload_hash'], digest):
+                    raise CursorConflict('run id reused with different snapshot')
+                return {'ok': True, 'run_id': snapshot['run_id'], 'period_start': snapshot['period_start'], 'period_end': snapshot['period_end'], 'expected': len(snapshot['accounts']), 'success': len(good), 'failed': len(bad), 'repeated': True, 'stale': not bool(previous['applied']), 'applied': bool(previous['applied']), 'replaced_accounts': 0, 'complete': complete}
+            latest = conn.execute('SELECT captured_epoch FROM cursor_runs WHERE period_start=? AND period_end=? AND applied=1 ORDER BY captured_epoch DESC,rowid DESC LIMIT 1', (lo, hi)).fetchone()
+            # A delayed retry is still recorded for audit, but cannot mutate the
+            # newest snapshot or bring back accounts retired by a later full run.
+            stale = latest is not None and captured_epoch <= latest['captured_epoch']
+            conn.execute('''INSERT INTO cursor_runs
+                (run_id,period_start,period_end,captured_at,captured_epoch,payload_hash,pagination_complete,expected_count,success_count,failed_count,complete,applied)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (snapshot['run_id'], lo, hi, captured, captured_epoch, digest, int(snapshot['pagination_complete']), len(snapshot['accounts']), len(good), len(bad), int(complete), int(not stale)))
+            for account in snapshot['accounts']:
+                conn.execute('INSERT INTO cursor_run_accounts VALUES(?,?,?,?,?)',
+                    (snapshot['run_id'], account['email'], int(account['ok']), int(account['shared']), account.get('error_code')))
+            for account in (() if stale else good):
+                conn.execute('''INSERT INTO cursor_weekly_accounts
+                    (period_start,period_end,email,shared,total_tokens,usage_records,charged_cents,charge_records,unpriced_records,models,by_day,last_success_at,last_success_epoch,source_run_id)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(period_start,period_end,email) DO UPDATE SET
+                    shared=excluded.shared,total_tokens=excluded.total_tokens,usage_records=excluded.usage_records,
+                    charged_cents=excluded.charged_cents,charge_records=excluded.charge_records,
+                    unpriced_records=excluded.unpriced_records,models=excluded.models,by_day=excluded.by_day,
+                    last_success_at=excluded.last_success_at,last_success_epoch=excluded.last_success_epoch,source_run_id=excluded.source_run_id
+                    WHERE excluded.last_success_epoch > cursor_weekly_accounts.last_success_epoch''',
+                    (lo, hi, account['email'], int(account['shared']), account['total_tokens'], account['usage_records'],
+                     account['charged_cents'], account['charge_records'], account['unpriced_records'],
+                     canonical_json(account['models']), canonical_json(account['by_day']), captured, captured_epoch, snapshot['run_id']))
+            # Only an all-account successful run can retire accounts removed from
+            # the central account list. Partial runs preserve the prior good value.
+            if complete and not stale:
+                current = [row['email'] for row in snapshot['accounts']]
+                if current:
+                    marks = ','.join('?' for _ in current)
+                    conn.execute(f'DELETE FROM cursor_weekly_accounts WHERE period_start=? AND period_end=? AND email NOT IN ({marks}) AND last_success_epoch<=?', (lo, hi, *current, captured_epoch))
+                else:
+                    conn.execute('DELETE FROM cursor_weekly_accounts WHERE period_start=? AND period_end=? AND last_success_epoch<=?', (lo, hi, captured_epoch))
+        applied = not stale
+        return {'ok': True, 'run_id': snapshot['run_id'], 'period_start': snapshot['period_start'], 'period_end': snapshot['period_end'], 'expected': len(snapshot['accounts']), 'success': len(good), 'failed': len(bad), 'repeated': False, 'stale': stale, 'applied': applied, 'replaced_accounts': len(good) if applied else 0, 'complete': complete}
+
+    def cursor_summary(self, lo, hi):
+        midnight = lambda value: value.weekday() == 0 and not any((value.hour, value.minute, value.second, value.microsecond))
+        if not midnight(lo) or not midnight(hi) or lo >= hi or (hi - lo).days % 7:
+            raise Invalid('Cursor summaries require complete Beijing natural weeks')
+        lower, upper = lo.timestamp(), hi.timestamp()
+        with self.connect() as conn:
+            conn.execute('BEGIN')
+            runs = [dict(row) for row in conn.execute('SELECT rowid AS sequence,* FROM cursor_runs WHERE period_start>=? AND period_end<=? AND applied=1 ORDER BY captured_epoch DESC,sequence DESC', (lower, upper))]
+            account_rows = [dict(row) for row in conn.execute('SELECT * FROM cursor_weekly_accounts WHERE period_start>=? AND period_end<=? ORDER BY period_start,email', (lower, upper))]
+            statuses = [dict(row) for row in conn.execute('''SELECT a.run_id,a.email,a.ok,a.shared,a.error_code,r.period_start,r.period_end,r.captured_at
+                FROM cursor_run_accounts a JOIN cursor_runs r ON r.run_id=a.run_id
+                WHERE r.period_start>=? AND r.period_end<=? AND r.applied=1 ORDER BY r.period_start,r.captured_epoch DESC,r.rowid DESC''', (lower, upper))]
+        weeks = int((hi - lo).days / 7)
+        newest_by_week = {}
+        for run in runs:
+            newest_by_week.setdefault(run['period_start'], run)
+        run_account_latest = {}
+        for row in statuses:
+            run = newest_by_week.get(row['period_start'])
+            if run and row['run_id'] == run['run_id']:
+                run_account_latest[(row['period_start'], row['email'])] = row
+        daily = defaultdict(lambda: {'total_tokens': 0, 'usage_records': 0})
+        models = defaultdict(lambda: {'total_tokens': 0, 'usage_records': 0})
+        people = defaultdict(lambda: {'email': '', 'shared': False, 'total_tokens': 0, 'usage_records': 0,
+            'charged_cents': 0, 'has_charges': False, 'charge_complete': True, 'last_success_at': None,
+            'models': defaultdict(lambda: {'total_tokens': 0, 'usage_records': 0})})
+        charge_subtotal, charge_missing, total_tokens, total_records = 0, 0, 0, 0
+        user_status = {}
+        for row in account_rows:
+            person = people[row['email']]
+            person['email'] = row['email']
+            person['_has_snapshot'] = True
+            person['shared'] = person['shared'] or bool(row['shared'])
+            person['total_tokens'] += row['total_tokens']
+            person['usage_records'] += row['usage_records']
+            person['last_success_at'] = max(person['last_success_at'] or '', row['last_success_at']) or None
+            if row['charged_cents'] is not None:
+                person['charged_cents'] += row['charged_cents']
+                person['has_charges'] = True
+                charge_subtotal += row['charged_cents']
+            if row['unpriced_records']:
+                person['charge_complete'] = False
+                charge_missing += row['unpriced_records']
+            total_tokens += row['total_tokens']
+            total_records += row['usage_records']
+            for model in json.loads(row['models']):
+                aggregate = person['models'][model['model']]
+                aggregate['total_tokens'] += model['total_tokens']
+                aggregate['usage_records'] += model['usage_records']
+                models[model['model']]['total_tokens'] += model['total_tokens']
+                models[model['model']]['usage_records'] += model['usage_records']
+            for day in json.loads(row['by_day']):
+                aggregate = daily[day['day']]
+                aggregate['total_tokens'] += day['total_tokens']
+                aggregate['usage_records'] += day['usage_records']
+        for (week_start, email), status in run_account_latest.items():
+            person = people[email]
+            person['email'] = email
+            person['shared'] = person['shared'] or bool(status['shared'])
+            previous = user_status.get(email)
+            if previous is None or week_start > previous['period_start']:
+                user_status[email] = {**status, 'period_start': week_start}
+        run_summaries = []
+        for run in sorted(newest_by_week.values(), key=lambda row: row['period_start']):
+            start = datetime.fromtimestamp(run['period_start'], BEIJING).date().isoformat()
+            end = datetime.fromtimestamp(run['period_end'], BEIJING).date().isoformat()
+            run_summaries.append({'run_id': run['run_id'], 'period_start': start, 'period_end': end,
+                'captured_at': run['captured_at'], 'expected': run['expected_count'], 'success': run['success_count'],
+                'failed': run['failed_count'], 'pagination_complete': bool(run['pagination_complete']), 'complete': bool(run['complete'])})
+        week_starts = [lower + 7 * 86400 * i for i in range(weeks)]
+        missing_weeks = [datetime.fromtimestamp(stamp, BEIJING).date().isoformat() for stamp in week_starts if stamp not in newest_by_week]
+        incomplete_weeks = [datetime.fromtimestamp(stamp, BEIJING).date().isoformat() for stamp, run in newest_by_week.items() if not run['complete']]
+        latest = max(newest_by_week.values(), key=lambda row: row['captured_epoch']) if newest_by_week else None
+        all_complete = len(newest_by_week) == weeks and all(run['complete'] for run in newest_by_week.values())
+        coverage_end = hi.isoformat() if all_complete else None
+        if not all_complete:
+            covered = lower
+            for stamp in week_starts:
+                run = newest_by_week.get(stamp)
+                if not run or not run['complete']:
+                    break
+                covered = run['period_end']
+            coverage_end = datetime.fromtimestamp(covered, BEIJING).isoformat()
+        expected_current = latest['expected_count'] if latest else 0
+        latest_accounts = [row for (week, _), row in run_account_latest.items() if latest and week == latest['period_start']]
+        summary_charge_complete = charge_missing == 0 and all(p['charge_complete'] for p in people.values()) and all_complete
+        def person_charge_complete(person):
+            return bool(person.get('_has_snapshot')) and person['charge_complete'] and all_complete and all(
+                run_account_latest.get((stamp, person['email']), {}).get('ok', True)
+                for stamp in week_starts if stamp in newest_by_week)
+        return {'period_start': lo.isoformat(), 'period_end': hi.isoformat(), 'timezone': 'Asia/Shanghai', 'source': 'cursor',
+            'totals': {'requests': total_records, 'usage_records': total_records, 'total_tokens': total_tokens,
+                'charged_cents': charge_subtotal if summary_charge_complete else None,
+                'charge_subtotal_cents': charge_subtotal, 'unpriced_records': charge_missing,
+                'charge_complete': summary_charge_complete,
+                'is_complete': all_complete},
+            'by_user': [{'email': person['email'], 'shared': person['shared'], 'available': bool(person.get('_has_snapshot')), 'error_code': user_status.get(person['email'], {}).get('error_code'), 'last_success_at': person['last_success_at'],
+                'totals': {'requests': person['usage_records'] if person.get('_has_snapshot') else None, 'usage_records': person['usage_records'] if person.get('_has_snapshot') else None, 'total_tokens': person['total_tokens'] if person.get('_has_snapshot') else None,
+                    'charged_cents': person['charged_cents'] if person_charge_complete(person) else None,
+                    'charge_subtotal_cents': person['charged_cents'] if person.get('_has_snapshot') else None,
+                    'charge_complete': person_charge_complete(person), 'is_complete': bool(person.get('_has_snapshot')) and all_complete and all(
+                        run_account_latest.get((stamp, person['email']), {}).get('ok', True)
+                        for stamp in week_starts if stamp in newest_by_week)},
+                'models': [{'model': name, **values} for name, values in sorted(person['models'].items(), key=lambda item: -item[1]['total_tokens'])]}
+                for person in sorted(people.values(), key=lambda item: (-item['total_tokens'], item['email']))],
+            'by_day': [{'day': day, **values} for day, values in sorted(daily.items())],
+            'by_model': [{'model': name, **values} for name, values in sorted(models.items(), key=lambda item: -item[1]['total_tokens'])],
+            'quality': {'is_complete': all_complete, 'missing_weeks': missing_weeks, 'incomplete_weeks': incomplete_weeks,
+                'account_count': expected_current, 'success_count': len([row for row in latest_accounts if row['ok']]),
+                'failed_count': len([row for row in latest_accounts if not row['ok']]), 'last_success_at': max((r['last_success_at'] for r in account_rows), default=None),
+                'coverage_end': coverage_end}, 'sync_runs': run_summaries,
+            'pricing': {'currency': 'USD', 'basis': 'cursor_charged_cents', 'notes': ['Cursor amount comes from the source usage records; it is not combined with Codex API-equivalent estimates or presented as an invoice.']}}
+
 def csv_safe(value):
     text = str(value)
     return "'" + text if text.lstrip().startswith(('=', '+', '-', '@', '\t', '\r')) else text
@@ -415,7 +695,7 @@ class Handler(BaseHTTPRequestHandler):
             if not role:
                 self.close_connection = True
                 return self.reply(401, {'error': 'unauthorized'})
-            if parsed.path in ('/api/users', '/api/summary', '/api/export.csv') and role != 'admin':
+            if parsed.path in ('/api/users', '/api/summary', '/api/export.csv', '/api/cursor/summary', '/api/cursor/snapshots') and role != 'admin':
                 self.close_connection = True
                 return self.reply(403, {'error': 'admin required'})
             if parsed.path == '/api/events' and role != 'uploader':
@@ -423,6 +703,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(403, {'error': 'uploader token required'})
             if method == 'GET' and parsed.path == '/api/users':
                 return self.reply(200, {'users': self.server.store.users()})
+            if method == 'GET' and parsed.path == '/api/cursor/summary':
+                params = parse_qs(parsed.query, keep_blank_values=True)
+                if any(len(v) != 1 for v in params.values()):
+                    raise Invalid('repeated query parameter')
+                lo, hi = query_period(params)
+                return self.reply(200, self.server.store.cursor_summary(lo, hi))
             if method == 'GET' and parsed.path in ('/api/summary', '/api/export.csv'):
                 params = parse_qs(parsed.query, keep_blank_values=True)
                 if any(len(v) != 1 for v in params.values()):
@@ -430,6 +716,11 @@ class Handler(BaseHTTPRequestHandler):
                 lo, hi = query_period(params)
                 result = self.server.store.summary(lo, hi, params.get('email', [None])[0])
                 return self.reply(200, export_csv(result), 'text/csv; charset=utf-8') if parsed.path.endswith('.csv') else self.reply(200, result)
+            if method == 'POST' and parsed.path == '/api/cursor/snapshots':
+                data = self.read_json(MAX_BODY)
+                if data is None:
+                    return
+                return self.reply(200, self.server.store.ingest_cursor_snapshot(data))
             if method != 'POST' or parsed.path not in ('/api/users', '/api/events'):
                 self.close_connection = True
                 return self.reply(404, {'error': 'not found'})
@@ -447,6 +738,9 @@ class Handler(BaseHTTPRequestHandler):
         except AlreadyExists:
             self.close_connection = True
             self.reply(409, {'error': 'user already exists; existing upload token was not changed'})
+        except CursorConflict:
+            self.close_connection = True
+            self.reply(409, {'error': 'Cursor run id reused with different snapshot'})
         except PermissionError:
             self.close_connection = True
             self.reply(403, {'error': 'uploader identity mismatch or disabled'})

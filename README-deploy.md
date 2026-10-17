@@ -12,9 +12,19 @@
 
 迁移原因：本机 Clash 订阅曾有 `DOMAIN-KEYWORD,usage,REJECT` 规则，导致包含 usage 的域名被误拦截。主域名改为 `codex.wenspock.site`，同事新安装默认使用新入口。既有 remote.json 不会被更新安装自动改写，继续使用旧地址即可，无需迁移。已有配置直接执行 enrollment.py --url 新入口会被目的地址一致性检查拒绝。若用户明确要求切换，并已确认两个地址属于同一服务，由维护者先备份私人 remote.json，再仅将其中 url 改为 https://codex.wenspock.site，保留原凭据和 device_id；也可使用独立 --config 路径重新自动接入，不覆盖旧配置。
 
+## Cursor 集中周采集
+
+Cursor 无需同事安装 skill 或逐人上报。65 服务器继续使用现有私有账号清单 `/srv/www/cursor-report/accounts.csv`；该文件含 API 密钥，只由 root 运行的周任务读取，不进入本仓库、Codex 服务静态目录或浏览器。
+
+每周一 22:00（Asia/Shanghai）采集刚结束的上周自然周，并通过仅监听回环地址的 Codex 服务管理员接口写入周快照。重复执行会按账号和周覆盖同一份快照，多账号分别保留并在汇总时累加；Cursor 接口没有可确认的稳定请求 ID，所以不把重复的明细事件当作 Codex `response_id` 去重。采集锁避免两个完整任务并行，超过 60 分钟由外层超时终止。
+
+周快照保存邮箱、共享账号标记、每日 token、模型 token、用量记录数量和源端可用的 `chargedCents`。API Key 和访问令牌不会写入快照。账号或分页失败时，失败状态会记录，先前成功的账号周快照保留，整周显示为不完整；不会用失败的零值覆盖旧数据。首采失败的账号会显示“不可用”，数值留空。延迟到达的旧快照只记审计，不会覆盖较新采集或让已移除账号重新出现；同一采集时间的后到快照也会被忽略。Cursor 金额按来源记录单独显示，不与 Codex API 等值估算相加；缺少源金额的 token 记录会标记费用覆盖不完整。当前历史日报只有 MM-DD 的每日 token 和近 30 天模型聚合，不能还原准确的历史周模型分布；看板会从新周采集中逐周积累模型数据。
+
+部署脚本将采集器放入当前 release，并安装受管的 Hermes runner `/root/.hermes/scripts/codex-usage-cursor-weekly.sh`。更新现有 Hermes 任务 `4b24b2e0f177` 为每周一 22:00、no-agent 调用该 runner；保留任务原 delivery target。周数据保存在 `/srv/www/cursor-report/data/weekly/`，文件权限 `0700/0600`。若任务需手动重传，使用已有快照的 `--retry-file`，不要为了网络重试重新累计快照。
+
 ## 文件与隔离
 
-- 最小源码清单见 [deploy/source-manifest.txt](deploy/source-manifest.txt)：`server.py`、`collector.py`、`prices.json`、`web/index.html`、`web/app.js`、`web/style.css`。服务端直接从 collector 导入 token 定义、时间解析和计价函数；不需要 identity、client、测试、真实报告或本机认证文件。
+- 最小服务清单见 [deploy/source-manifest.txt](deploy/source-manifest.txt)：`server.py`、`collector.py`、`cursor_weekly.py`、`prices.json`、看板三文件和 `deploy/cursor-weekly.sh`。服务端直接从 collector 导入 Codex token 定义、时间解析和计价函数；不需要 identity、client、测试、Cursor 账号清单或本机认证文件。
 - 代码存于 `/opt/codex-usage/releases/<版本>`，`current` 指向当前版本。代码 root 所有、服务用户只读。
 - 单独系统用户/组 `codex-usage`，shell 为 `/usr/sbin/nologin`；SQLite 数据在 `/var/lib/codex-usage/usage.sqlite3`，仅服务用户可写。
 - 配置 `/etc/codex-usage/server.json` 为 `root:codex-usage 0640`，内容仅需 `{"admin_key":"至少24字符的随机密钥"}`。安装器只在不存在时生成，不打印、不轮换既有密钥，不备份到源码目录。
@@ -22,7 +32,7 @@
 
 ## 安装与 HTTPS
 
-先核实 DNS A 指向目标主机；如配置 AAAA，必须确保 IPv6 同样可达。检查端口 18765、既有虚拟主机和 Certbot timer，不覆盖其他站点。将上述六个源码文件及 `deploy/` 放入独立的服务器暂存目录，如 `/root/codex-usage-stage`；暂存目录不得是 `/opt/codex-usage` 内部。
+先核实 DNS A 指向目标主机；如配置 AAAA，必须确保 IPv6 同样可达。检查端口 18765、既有虚拟主机和 Certbot timer，不覆盖其他站点。将上述七个源码文件及 `deploy/` 放入独立的服务器暂存目录，如 `/root/codex-usage-stage`；暂存目录不得是 `/opt/codex-usage` 内部。
 
 ```sh
 # 在目标 Linux 主机以 root 执行；替换为实际暂存路径。
@@ -57,9 +67,11 @@ Nginx 请求体上限 17 MiB，后端实际限制 16 MiB/每批 50000 事件；�
 
 ## 更新与回退
 
-更新仍先暂存审阅后的固定清单，运行安装器 `none`（只更新后端）或 `tls`（同时更新本站配置）。安装器在修改前，将新旧两个域名的现有虚拟主机配置、systemd unit、独立钩子及旧代码备份到 `/var/backups/codex-usage/<版本>`；数据库使用 SQLite online backup，不复制一个正在写入的裸数据库文件。旧 release 原地保留，无递归删除。任何现有凭据均保留；失败时先检查备份路径，不以重新生成管理员密钥“修复”。
+更新仍先暂存审阅后的固定清单，运行安装器 `none`（更新应用和采集 runner，不修改 Nginx）或 `tls`（同时更新本站配置）。安装器在修改前，将新旧两个域名的现有虚拟主机配置、systemd unit、独立钩子、受管 Hermes runner 及旧代码备份到 `/var/backups/codex-usage/<版本>`；数据库使用 SQLite online backup，不复制一个正在写入的裸数据库文件。旧 release 原地保留，无递归删除。任何现有凭据均保留；失败时先检查备份路径，不以重新生成管理员密钥“修复”。
 
 代码回退使用备份中的 `previous-release.txt`，人工核实其位于 `/opt/codex-usage/releases/` 后，将 `current` 原子切回旧版本再 `systemctl restart codex-usage`。如果需要回退本站 Nginx/unit，先从对应备份恢复原文件，运行 `systemd-analyze verify` / `nginx -t`，成功后再 daemon-reload、重启或 reload。数据库回滚可能丢失更新期间已接收的事件，需单独决策；普通代码回退不要覆盖现有数据库。
+
+若回退到尚无 Cursor 周采集器的旧版本，先用 `devops cron edit 4b24b2e0f177` 恢复原有的每日 22:00 agent 任务定义（名称“Cursor 用量日报”、原提示词和 `origin` delivery target），或暂停该任务；不要让旧任务继续调用新版本 runner。Hermes CLI 修改任务时保留未指定的 delivery 字段；回退前先检查 `devops cron edit --help` 和当前任务详情，按备份记录恢复，不要直接编辑 `jobs.json`。
 
 ## 默认统计区间
 

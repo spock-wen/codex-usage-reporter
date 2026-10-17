@@ -1,6 +1,8 @@
 server.py
 collector.py
+cursor_weekly.py
 prices.json
 web/index.html
 web/app.js
 web/style.css
+deploy/cursor-weekly.sh
