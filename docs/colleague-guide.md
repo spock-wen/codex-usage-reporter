@@ -8,9 +8,11 @@
 
 每位同事在**每台需要统计的机器**上，将下面整段交给 Codex，无需本人拉仓库或运行命令：
 
-> 请只下载安装 https://gitee.com/hihope-aifoundry/codex-usage-reporter/tree/main/skills/codex-usage 完整 skill 目录（含 agents 和 scripts，共 9 个文件），不要克隆或下载整个仓库；已有安装请备份后安全更新，保留私人配置、凭据、设备 ID 和原上报地址，不重复安装。运行实际安装目录的 scripts/enrollment.py 自动读取 Codex 邮箱并保存私有接入凭证，新装默认 https://codex.wenspock.site；安装成功后立即运行 scripts/report.py run --period last-week，保存本地报告并反馈起止时间、token 用量及新增、重复、冲突数量。再创建或复用更新本机同用途的 Codex 原生自动化，每周一上午 10:00（Asia/Shanghai）使用实际安装目录上报每次执行时的上周自然周用量（last-week），周任务添加 --max-upload-delay-seconds 600 做设备错峰；首次上报不等待。不重复创建任务，不复制其他机器的凭据；完成后告诉我首次回执和自动化设置结果。
+> 请只下载安装 https://gitee.com/hihope-aifoundry/codex-usage-reporter/tree/main/skills/codex-usage 完整 skill 目录（含 agents 和 scripts，共 9 个文件），不要克隆或下载整个仓库；已有安装请备份后安全更新，保留私人配置、凭据、设备 ID 和原上报地址，不重复安装。运行实际安装目录的 scripts/enrollment.py 自动读取 Codex 邮箱并保存私有接入凭证，新装默认 https://codex.wenspock.site；安装成功后先固定同一个带时区的采集截止时刻，立即分别运行 scripts/report.py run --period last-week --now <截止时刻> 和 scripts/report.py run --period this-week --now <截止时刻>，上报相对此时刻的上周及本周截至该时刻的用量；分别保存本地报告并核对两份回执，反馈各自起止时间、token 用量及新增、重复、冲突数量，任一失败需如实说明。再创建或复用更新本机同用途的 Codex 原生自动化，每周一上午 10:00（Asia/Shanghai）使用实际安装目录上报每次执行时的上周自然周用量（last-week），周任务每次重新取当前时刻，不固定首次 --now，并添加 --max-upload-delay-seconds 600 做设备错峰；首次两次上报均不等待。不重复创建任务，不复制其他机器的凭据；完成后告诉我两份首次回执和自动化设置结果。
 
-这段话同时授权首次上传及创建每周任务。先完成首次 last-week 上报，再用 Codex 原生自动化保存周一 10:00（Asia/Shanghai）的计划；同一机器已有同用途任务时更新复用，不另建一份。运行指令必须使用实际 Python 与 skill 脚本的绝对路径，并把报告存放在 skill 外；首次不加延迟参数，只有周任务加 --max-upload-delay-seconds 600。
+这段话同时授权首次上传上周、本周两份数据并创建每周任务。先固定一个带时区的 ISO 截止时刻，两次命令均传相同的 --now <截止时刻>；last-week 与 this-week 都相对此时刻计算，this-week 从该时刻所在北京时间周的周一 00:00 至截止时刻，避免两次采集跨周导致漏报。两次分别使用 skill 外的报告目录，例如 reports/first-last-week 和 reports/first-this-week，并分别核对 ACK 与起止时间、token、新增、重复、冲突；一份失败时保留两份结果，不能声称全部成功。
+
+然后用 Codex 原生自动化保存周一 10:00（Asia/Shanghai）的计划，**周任务仍只执行 last-week，并在每次执行时重新取当前时刻，不能固定首次 --now**；同一机器已有同用途任务时更新复用，不另建一份。运行指令必须使用实际 Python 与 skill 脚本的绝对路径；首次两次均不加延迟参数，只有周任务加 --max-upload-delay-seconds 600。
 
 ### 周任务的执行条件与错峰
 
@@ -72,7 +74,7 @@ scripts/prices.json
 
 例如读取文件 `scripts/enrollment.py` 时，请求 `.../contents/skills/codex-usage/scripts/enrollment.py?ref=<SHA>`，按响应的 encoding 解码 content。全部文件在临时目录验证完成后再安装，记录实际 skill 目录；新装使用当前 Codex 的用户 skill 目录，已有安装更新原位置。将旧版备份到 skill 发现目录之外，逐文件原子替换受管理文件；保留未知文件以及所有私人配置、凭据、设备 ID、原上报地址，不删除整个原目录，不产生重复安装。若本地程序有修改，先保留差异，不覆盖丢失。
 
-安装后直接用实际目录的 scripts/enrollment.py 接入；需要本地自测则执行 scripts/report.py run --period last-week --no-upload，并把报告放在 skill 目录之外。只有明确选择推荐的安装、首次上报及每周自动化话术，或另行要求上报时，才执行 scripts/report.py run --period last-week --output-dir <本地报告目录>；这些操作都无需仓库根脚本。
+安装后直接用实际目录的 scripts/enrollment.py 接入；只需本地自测则执行 scripts/report.py run --period last-week --no-upload，并把报告放在 skill 目录之外。明确选择推荐流程时，先固定一个带时区截止时刻，分别执行 scripts/report.py run --period last-week --now <截止时刻> --output-dir <上周报告目录> 和 scripts/report.py run --period this-week --now <截止时刻> --output-dir <本周报告目录>，两次使用同一时刻；核对两份回执后设置每次实时计算、只跑 last-week 的周任务。只要求手动上报上周时则仅执行 last-week。以上操作均无需仓库根脚本。
 
 ## 维护者/开发者可选：自行拉取仓库
 

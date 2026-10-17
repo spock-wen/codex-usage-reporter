@@ -66,6 +66,33 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(result["period_end"], "2026-10-12T00:00:00+08:00")
         self.assertEqual(result["totals"]["total_tokens"], 2)
 
+    def test_this_week_report_upload_and_cli_keep_current_week_separate(self):
+        args = {**self.args, "period": "this-week"}
+        with mock.patch("report.client.upload_with_retries", return_value=({"ok": True}, 1)) as send:
+            result = report.run_report(**args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["period_start"], "2026-10-12T00:00:00+08:00")
+        self.assertEqual(result["period_end"], self.args["now"])
+        self.assertEqual(result["totals"]["total_tokens"], 110)
+        self.assertEqual(send.call_args.args[2]["period_start"], result["period_start"])
+        self.assertTrue(Path(result["events_path"]).name.startswith("this-week-"))
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = report.main(["run", "--period", "this-week", "--no-upload", "--now", self.args["now"], "--codex-home", str(self.codex), "--output-dir", str(self.root / "cli-this-week")])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["period_start"], result["period_start"])
+
+    def test_this_week_exact_monday_midnight_stops_without_upload_or_invalid_files(self):
+        with mock.patch("report.client.upload_with_retries", side_effect=AssertionError("no zero-width upload")):
+            result = report.run_report(**{**self.args, "period": "this-week", "now": "2026-10-11T16:00:00Z"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "current_week_not_started")
+        self.assertEqual(result["reason"], "current_week_has_no_elapsed_interval")
+        self.assertFalse((self.root / "reports").exists())
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = report.main(["run", "--period", "this-week", "--now", "2026-10-11T16:00:00Z", "--no-upload", "--codex-home", str(self.codex)])
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(stdout.getvalue())["status"], "current_week_not_started")
+
     def test_one_scan_writes_safe_files_and_uploads_same_batch(self):
         ack = {"ok": True, "batch_id": "a" * 64, "received": 1, "new": 1, "duplicates": 0,
                "conflicts": 0, "rejected": 0, "quarantined": 0}

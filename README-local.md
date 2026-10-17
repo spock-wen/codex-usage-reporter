@@ -19,6 +19,8 @@ python report.py run --period last-week --output-dir reports/local-weekly
 
 需要纯本地统计用 `python report.py run --period last-week --no-upload --output-dir reports/local`，不联网、不查询登录身份。不指定周期时也默认 last-week，为北京时间上个自然周；只有明确需要最近七个滚动日时才用 --period last7；历史补报可用 collector 的 --start/--end。远端同事安装见 [指南](docs/colleague-guide.md)。
 
+首次接入后明确要求同时上报上周与本周时，先冻结一个带时区的 ISO 截止时刻，分别运行 `report.py run --period last-week --now <同一截止时刻>` 和 `report.py run --period this-week --now <同一截止时刻>`；本周为北京时间本周一 00:00 至该截止时刻，两次共用 --now，执行跨周也保持区间连续、不重叠。两个周期分别保存报告和核对回执。每周一 10:00 的定时仍只上报 last-week，并使用每次实际运行时刻。周一精确 00:00 没有正长度本周区间，返回 current_week_not_started，不上传；稍后再补报本周。
+
 以下仅为旧版手动接入兼容：管理员在网页“手动兼容接入”登记邮箱并取得个人令牌，再用 `collector.py collect --period last-week --output reports/summary.json --events-output reports/events.json` 生成本地包。
 
 将网页生成的上报令牌存入本地文件，例如 `.local/upload-token.json`，内容为 `{"upload_token":"此处替换为专属令牌"}`。然后执行：

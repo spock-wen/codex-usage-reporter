@@ -246,6 +246,36 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["period_end"], "2026-10-12T00:00:00+08:00")
         self.assertEqual(result["totals"]["total_tokens"], 34)
 
+    def test_this_week_normalizes_timezone_and_rejects_exact_monday_midnight(self):
+        _, lo, hi = period_bounds("this-week", "2026-10-11T16:00:01Z")
+        self.assertEqual(lo.isoformat(), "2026-10-12T00:00:00+08:00")
+        self.assertEqual(hi.isoformat(), "2026-10-12T00:00:01+08:00")
+        _, lo, hi = period_bounds("this-week", "2026-10-11T15:59:59Z")
+        self.assertEqual(lo.isoformat(), "2026-10-05T00:00:00+08:00")
+        self.assertEqual(hi.isoformat(), "2026-10-11T23:59:59+08:00")
+        with self.assertRaisesRegex(ValueError, "current_week_has_no_elapsed_interval"):
+            period_bounds("this-week", "2026-10-11T16:00:00Z")
+
+    def test_this_week_collects_only_elapsed_current_week_and_cli_accepts_option(self):
+        self.write("sessions/current-week.jsonl", [meta("current-week"), context(),
+                   event("previous", "2026-10-11T23:59:59+08:00", usage(1, o=1)),
+                   event("current-start", "2026-10-12T00:00:00+08:00", usage(20, o=2)),
+                   event("current-later", "2026-10-13T12:00:00+08:00", usage(30, o=3)),
+                   event("exclusive-end", "2026-10-14T12:00:00+08:00", usage(100, o=10)),
+                   event("future", "2026-10-14T12:00:01+08:00", usage(200, o=20))])
+        args = dict(codex_home=self.root, now="2026-10-14T12:00:00+08:00", prices=PRICES)
+        result, package = collect(period="this-week", include_events=True, **args)
+        self.assertEqual(result["period_start"], "2026-10-12T00:00:00+08:00")
+        self.assertEqual(result["period_end"], args["now"])
+        self.assertEqual(result["totals"]["total_tokens"], 55)
+        self.assertEqual(result["totals"]["requests"], 2)
+        self.assertEqual(len(package["events"]), 2)
+        self.assertEqual(collect(**args)["totals"]["total_tokens"], 2)
+        output = self.root / "this-week-cli.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["collect", "--period", "this-week", "--now", args["now"], "--codex-home", str(self.root), "--output", str(output)])
+        self.assertEqual(json.loads(output.read_text())["totals"]["total_tokens"], 55)
+
     def test_event_package_stable_repeat_and_diagnostic_changes(self):
         p = self.write("sessions/a.jsonl", [meta("private-session"), context(), BASELINE,
                        event("stable-a"), event("stable-b", counts=usage(2, o=3))])

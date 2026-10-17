@@ -35,6 +35,11 @@ def period_bounds(period="last-week", now=None, start=None, end=None):
     elif period == "last-week":
         hi = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
         lo = hi - timedelta(days=7)
+    elif period == "this-week":
+        hi = now
+        lo = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
+        if lo == hi:
+            raise ValueError("current_week_has_no_elapsed_interval")
     else:
         hi, lo = now, now - timedelta(days=7)
     if lo >= hi:
@@ -364,7 +369,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     cmd = sub.add_parser("collect")
-    cmd.add_argument("--period", choices=("last7", "last-week"), default="last-week", help="Default: previous natural week in Beijing; last7 is an explicit rolling seven-day window")
+    cmd.add_argument("--period", choices=("last7", "last-week", "this-week"), default="last-week", help="Default: previous natural week in Beijing; this-week ends at now, last7 is a rolling seven-day window")
     cmd.add_argument("--codex-home")
     cmd.add_argument("--now")
     cmd.add_argument("--start")

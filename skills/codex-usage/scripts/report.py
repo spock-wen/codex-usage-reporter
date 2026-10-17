@@ -60,7 +60,11 @@ def run_report(period="last-week", now=None, output_dir=None, config=None, codex
                       period_start=report["period_start"], period_end=report["period_end"],
                       totals=report["totals"], data_status=report["data_status"],
                       configured_email_masked=report["submission_context"]["configured_email_masked"])
-    except (ValueError, OSError, TypeError):
+    except ValueError as error:
+        if str(error) == "current_week_has_no_elapsed_interval":
+            return {**result, "status": "current_week_not_started", "reason": "current_week_has_no_elapsed_interval"}
+        return {**result, "status": "local_collection_failed", "reason": "invalid_local_input_or_output"}
+    except (OSError, TypeError):
         return {**result, "status": "local_collection_failed", "reason": "invalid_local_input_or_output"}
     if no_upload:
         return {**result, "ok": True, "status": "local_only"}
@@ -87,7 +91,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     cmd = sub.add_parser("run", help="One scan, local report and safe events, then optional bounded upload")
-    cmd.add_argument("--period", choices=("last7", "last-week"), default="last-week", help="Default: previous natural week in Beijing; last7 is an explicit rolling seven-day window")
+    cmd.add_argument("--period", choices=("last7", "last-week", "this-week"), default="last-week", help="Default: previous natural week in Beijing; this-week ends at now, last7 is a rolling seven-day window")
     cmd.add_argument("--now", help="Timezone-aware ISO timestamp for a reproducible cutoff")
     cmd.add_argument("--output-dir", help="Report directory outside the installed skill; default current workspace/codex-usage-reports")
     cmd.add_argument("--config", help="Private remote.json; never stored in the skill bundle")
