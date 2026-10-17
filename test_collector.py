@@ -52,7 +52,7 @@ class CollectorTests(unittest.TestCase):
         return p
 
     def run_report(self, **kwargs):
-        return collect(self.root, now="2026-10-16T17:38:34+08:00", prices=PRICES, **kwargs)
+        return collect(self.root, period="last7", now="2026-10-16T17:38:34+08:00", prices=PRICES, **kwargs)
 
     def test_response_id_dedup_across_path_machine_session_and_parent_meta(self):
         rows = [meta("actual-child"), meta("copied-parent"), context(), BASELINE,
@@ -213,6 +213,39 @@ class CollectorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             period_bounds(start="2026-10-05T00:00:00+08:00")
 
+    def test_default_previous_week_is_stable_from_monday_through_sunday(self):
+        self.write("sessions/defaults.jsonl", [meta("week-default"), context(),
+                   event("previous", "2026-10-05T00:00:00+08:00", usage(30, o=4)),
+                   event("current", "2026-10-12T00:00:00+08:00", usage(100, o=10))])
+        for cutoff in ("2026-10-12T00:01:00+08:00", "2026-10-13T15:30:00+08:00", "2026-10-18T23:59:59+08:00"):
+            with self.subTest(cutoff=cutoff):
+                _, lo, hi = period_bounds(now=cutoff)
+                result = collect(self.root, now=cutoff, prices=PRICES)
+                self.assertEqual(lo.isoformat(), "2026-10-05T00:00:00+08:00")
+                self.assertEqual(hi.isoformat(), "2026-10-12T00:00:00+08:00")
+                self.assertEqual(result["period_start"], lo.isoformat())
+                self.assertEqual(result["period_end"], hi.isoformat())
+                self.assertEqual(result["totals"]["total_tokens"], 34)
+        cutoff = "2026-10-13T15:30:00+08:00"
+        _, lo, hi = period_bounds("last7", now=cutoff)
+        self.assertEqual(lo.isoformat(), "2026-10-06T15:30:00+08:00")
+        self.assertEqual(hi.isoformat(), cutoff)
+        result = collect(self.root, period="last7", now=cutoff, prices=PRICES)
+        self.assertEqual(result["totals"]["total_tokens"], 110)
+
+    def test_collector_cli_without_period_uses_previous_week(self):
+        self.write("sessions/cli.jsonl", [meta("cli"), context(),
+                   event("previous", "2026-10-08T00:00:00Z", usage(30, o=4)),
+                   event("current", "2026-10-12T00:00:00Z", usage(100, o=10))])
+        output = self.root / "cli-report.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["collect", "--codex-home", str(self.root), "--now", "2026-10-13T15:30:00+08:00", "--output", str(output)])
+        self.assertIsNone(code)
+        result = json.loads(output.read_text())
+        self.assertEqual(result["period_start"], "2026-10-05T00:00:00+08:00")
+        self.assertEqual(result["period_end"], "2026-10-12T00:00:00+08:00")
+        self.assertEqual(result["totals"]["total_tokens"], 34)
+
     def test_event_package_stable_repeat_and_diagnostic_changes(self):
         p = self.write("sessions/a.jsonl", [meta("private-session"), context(), BASELINE,
                        event("stable-a"), event("stable-b", counts=usage(2, o=3))])
@@ -247,7 +280,7 @@ class CollectorTests(unittest.TestCase):
             target = Path(other_device) / "sessions" / "renamed.jsonl"
             target.parent.mkdir()
             target.write_bytes(p.read_bytes())
-            _, cloned_device = collect(other_device, now="2026-10-16T17:38:34+08:00",
+            _, cloned_device = collect(other_device, period="last7", now="2026-10-16T17:38:34+08:00",
                                        prices=PRICES, include_events=True)
         self.assertEqual(original["events"], cloned_device["events"])
         self.assertEqual(original["batch_id"], cloned_device["batch_id"])
@@ -261,7 +294,7 @@ class CollectorTests(unittest.TestCase):
             target.parent.mkdir()
             target.write_text("\n".join(json.dumps(r) for r in [context(), BASELINE, shared,
                               event("device-two", counts=usage(30, o=5))]), encoding="utf-8")
-            _, second = collect(other_device, now="2026-10-16T17:38:34+08:00", prices=PRICES,
+            _, second = collect(other_device, period="last7", now="2026-10-16T17:38:34+08:00", prices=PRICES,
                                  include_events=True)
         # This is the future receiver's uniqueness rule, scoped to one team.
         merged = {event["event_id"]: event for event in first["events"] + second["events"] + first["events"]}

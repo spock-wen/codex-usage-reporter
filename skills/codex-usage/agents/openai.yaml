@@ -1,6 +1,6 @@
 interface:
   display_name: "Codex 用量统计"
   short_description: "统计本地 Codex 用量与内部自报周报，支持自动接入、跨机去重并披露邮箱未验证状态"
-  default_prompt: "使用 $codex-usage 统计最近七天的本地 Codex token 和估算费用，仅保存本地报告，不上传。"
+  default_prompt: "使用 $codex-usage 统计上周自然周的本地 Codex token 和估算费用，仅保存本地报告，不上传、不创建定时任务。"
 policy:
   allow_implicit_invocation: true

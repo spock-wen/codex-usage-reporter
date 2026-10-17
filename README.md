@@ -6,19 +6,19 @@
 
 新装且没有配置时默认使用 codex.wenspock.site。旧地址 https://usage.wenspock.site 保留相同接口与数据，已有配置继续使用原地址和凭据，更新 skill 不会静默迁移；旧地址直接处理上报，不依赖重定向。
 
-同事首次使用只需把下面这段话贴到 Codex，不需要自己拉仓库、运行命令或登录 GitHub：
+**推荐：每位同事在每台需要统计的机器上，把下面整段贴给 Codex，一次完成安装、首次上报和每周自动上报：**
 
-> 请用 skill-installer 安装 https://github.com/spock-wen/codex-usage-reporter/tree/main/skills/codex-usage ，安装后运行该 skill 的 scripts/enrollment.py，自动读取本机 Codex 邮箱接入 https://codex.wenspock.site 并保存凭证；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务；已有安装请安全更新并保留私人配置和原上报地址。
+> 请只下载安装 https://gitee.com/hihope-aifoundry/codex-usage-reporter/tree/main/skills/codex-usage 完整 skill 目录（含 agents 和 scripts，共 9 个文件），不要克隆或下载整个仓库；已有安装请备份后安全更新，保留私人配置、凭据、设备 ID 和原上报地址，不重复安装。运行实际安装目录的 scripts/enrollment.py 自动读取 Codex 邮箱并保存私有接入凭证，新装默认 https://codex.wenspock.site；安装成功后立即运行 scripts/report.py run --period last-week，保存本地报告并反馈起止时间、token 用量及新增、重复、冲突数量。再创建或复用更新本机同用途的 Codex 原生自动化，每周一上午 10:00（Asia/Shanghai）使用实际安装目录上报每次执行时的上周自然周用量（last-week），周任务添加 --max-upload-delay-seconds 600 做设备错峰；首次上报不等待。不重复创建任务，不复制其他机器的凭据；完成后告诉我首次回执和自动化设置结果。
 
-**安装完成后，每周上报时再把这段话贴到 Codex：**
+该话术明确授权首次上传和创建每周任务。每台机器独立注册、独立执行；同邮箱多机新请求累加，同一请求重复上报只计算一次，不能复制凭据。自动化每周一 10:00 触发，上传前随机等待 0–10 分钟错峰；首次上报立即执行，不加错峰等待。
+
+本地日志任务需要电脑开机且 Codex 桌面应用运行；离线不保证自动补报，历史补报应明确起止日期。参见[官方自动化说明](https://learn.chatgpt.com/docs/automations)。实际执行安装和配置后才算接入完成；仅安装 skill 不会自行创建任务。
+
+**仅需手动上报时，用这段话：**
 
 > 使用 $codex-usage 采集并上报上周自然周的 Codex 用量到已配置的团队服务，保存本地报告，并告诉我起止时间、token 用量及新增、重复、冲突数量。
 
-建议每周一执行；本周其他日期执行也覆盖同一个上周，即北京时间上周一 00:00 至本周一 00:00，不含结束时刻，使用 last-week，不用滚动七天的 last7。每台机器各自上报，同一请求重复上传只计算一次。安装只完成接入，不会自行上报或定时运行。
-
-**也可以选择安装后立即上报上周，整段转发给同事即可（这段明确授权上传）：**
-
-> 请从 https://gitee.com/hihope-aifoundry/codex-usage-reporter 下载或克隆仓库到工作区，保留已有修改，执行仓库根的 python scripts/manage_skill.py install --enroll 安装并自动接入；新装默认 https://codex.wenspock.site，已有安装保留私人配置和原上报地址。然后使用实际安装的 codex-usage skill 立即采集并上报上周自然周用量（last-week），保存本地报告，反馈起止时间、token 用量及新增、重复、冲突数量；不创建定时任务。
+默认统计和上报上周自然周（last-week），北京时间上周一 00:00 至本周一 00:00，不含结束时刻；本周其他日期执行也覆盖同一个上周。只有明确要求“最近 7 天”或指定 last7 时才用滚动七天。只安装不上传、不定时的备选见[同事指南](docs/colleague-guide.md#备选只安装不上传或定时)。
 
 仓库按 [MIT 许可证](LICENSE) 开源。需已正常登录 Codex，并有可运行的 Python 3.10+；脚本和安装操作由 Codex 执行。详见 [安装与每周上报指南](docs/colleague-guide.md)。自包含 skill 位于 [skills/codex-usage](skills/codex-usage/SKILL.md)。
 
@@ -36,8 +36,8 @@
 Python 3.10+，运行时只使用标准库，无需安装 Python 第三方依赖。先选择可用的 Python 解释器；Windows Store 占位程序不能执行本项目。
 
 ```sh
-# 只生成本地报告和安全事件文件，不读取上传令牌、不联网。
-python report.py run --period last7 --no-upload --output-dir reports/local
+# 默认周期为上周自然周；只生成本地报告和安全事件文件，不读取上传令牌、不联网。
+python report.py run --period last-week --no-upload --output-dir reports/local
 
 # 已正常登录 Codex 时自动接入，无需手填邮箱或令牌。
 python enrollment.py
@@ -64,7 +64,7 @@ python -m unittest discover -v
 
 输入 token 已包含缓存读写，输出 token 已包含 reasoning，不能重复相加。费用由服务器按 `prices.json` 的模型、缓存和长上下文规则计算，是价格快照下的 API 等值估算，不能解释为订阅扣费或剩余额度。未知模型显示未定价和已定价小计；缺少数据、未提交或冲突时不能把部分观测值称为完整账户用量。
 
-`last7` 为截至执行时刻连续七天；`last-week` 为北京时间上个自然周。所有查询区间左闭右开。日志仅覆盖已读取并上报的本地记录，其他机器、云端、已删除历史及缺少稳定请求 ID 的记录可能不在统计中。
+默认 `last-week` 为北京时间上个自然周；只有明确要求“最近 7 天”或指定 `last7` 时，才使用截至执行时刻连续七天。所有查询区间左闭右开。日志仅覆盖已读取并上报的本地记录，其他机器、云端、已删除历史及缺少稳定请求 ID 的记录可能不在统计中。
 
 ## 仓库边界
 

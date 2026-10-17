@@ -29,6 +29,34 @@
     return count(value);
   }
   function amount(value) { return finite(value) ? "$" + money.format(value) : "未定价"; }
+  function costDisplay(totals = {}) {
+    if (finite(totals.estimated_cost_usd)) return { value: amount(totals.estimated_cost_usd), label: "API 等值费用", detail: "按价格快照估算，非订阅账单", partial: false };
+    const unpriced = finite(totals.unpriced_requests) ? totals.unpriced_requests : 0;
+    return { value: amount(totals.priced_cost_usd), label: unpriced ? "已定价费用小计" : "观测费用小计",
+      detail: unpriced ? count(unpriced) + " 条未知模型请求未定价；小计仅含已定价记录" : "仅含可用日志，非完整账户费用或订阅账单", partial: true };
+  }
+  function coverageNotice(data) {
+    const quality = data.quality || {};
+    const incompletePeriods = finite(quality.incomplete_device_periods) ? quality.incomplete_device_periods : 0;
+    const missing = Array.isArray(quality.missing_users) ? quality.missing_users.length : 0;
+    const partialDevices = finite(quality.partial_coverage_devices) ? quality.partial_coverage_devices : 0;
+    const unpriced = finite(data.totals?.unpriced_requests) ? data.totals.unpriced_requests : 0;
+    const incomplete = data.totals?.is_complete === false || quality.is_complete === false || incompletePeriods > 0 || missing > 0 || partialDevices > 0;
+    let message = incomplete ? "仅显示可用日志的用量小计，不能视为完整账户用量。" : "已获取所选区间的上报记录；本地日志不代表完整账户用量。";
+    if (incompletePeriods) message += " " + count(incompletePeriods) + " 个设备统计区间日志不完整，请检查缺失日志。";
+    if (partialDevices) message += " " + count(partialDevices) + " 台已上报设备仅覆盖所选区间部分日期。";
+    if (missing) message += " " + count(missing) + " 个邮箱本期未提交，不能视为已核实的零用量。";
+    if (unpriced) message += " " + count(unpriced) + " 条未知模型请求尚未定价，费用仅显示已定价小计。";
+    if (quality.conflicted_events_excluded > 0) message += " 冲突记录已隔离，不计入小计。";
+    if (!data.totals?.requests) message += " 此区间尚无有效用量。";
+    return { message, type: incomplete || unpriced ? "warning" : "success" };
+  }
+  function incompleteReasonText(reason) {
+    const labels = { no_files: "没有找到本地日志", no_canonical_usage_records: "没有可去重的用量记录", source_starts_after_period: "本地日志未覆盖区间起点",
+      conflicting_response_ids: "同一请求的记录存在冲突", unreadable_files: "部分日志无法读取", malformed_lines: "部分日志内容损坏",
+      usage_records_without_response_id: "部分请求缺少去重标识", invalid_usage_timestamps: "部分请求时间无效", invalid_usage_records: "部分用量记录无效" };
+    return labels[reason] || "部分日志或记录不可用";
+  }
   function dateTime(value) {
     if (!value) return "尚未同步";
     const date = new Date(value);
@@ -53,6 +81,7 @@
     for (const id of ["stat-tokens", "stat-cost", "stat-requests", "stat-users"]) { $(id).textContent = "—"; $(id).removeAttribute("title"); }
     $("stat-tokens-detail").textContent = "输入与输出合计";
     $("stat-cost-detail").textContent = "按价格快照估算，非订阅账单";
+    $("stat-cost-label").textContent = "API 等值费用";
     $("user-count").textContent = "—";
     $("trend-chart").replaceChildren(node("p", "empty-message", message));
     $("model-list").replaceChildren(node("p", "empty-message", message));
@@ -112,9 +141,8 @@
       render();
       $("export-button").disabled = false;
       $("last-updated").textContent = "更新于 " + dateTime(new Date().toISOString()) + " · 北京时间";
-      const missingUsers = Array.isArray(data.quality?.missing_users) ? data.quality.missing_users.length : 0;
-      const missingNote = missingUsers ? " " + count(missingUsers) + " 个邮箱本期未提交，不能将其视为已核实的零用量。" : "";
-      notice((data.totals.requests > 0 ? "已获取最新上报数据；重复响应已去重，冲突响应已隔离。" : "此区间尚无有效用量。成员可使用本机 skill 自动接入并上报。") + missingNote, "success");
+      const coverage = coverageNotice(data);
+      notice(coverage.message, coverage.type);
     } catch (error) {
       if (sequence !== requestSequence || error.name === "AbortError") return;
       clearData("本次读取失败，已清除旧结果");
@@ -130,12 +158,15 @@
     $("stat-tokens").textContent = compact(totals.total_tokens);
     $("stat-tokens").title = count(totals.total_tokens) + " Token";
     $("stat-tokens-detail").textContent = "输入 " + compact(totals.input_tokens) + " · 输出 " + compact(totals.output_tokens);
-    $("stat-cost").textContent = amount(totals.estimated_cost_usd);
-    $("stat-cost-detail").textContent = totals.estimated_cost_usd == null ? "已定价小计 " + amount(totals.priced_cost_usd) + " · 估算不完整" : "按价格快照估算，非订阅账单";
+    const cost = costDisplay(totals);
+    $("stat-cost").textContent = cost.value;
+    $("stat-cost-label").textContent = cost.label;
+    $("stat-cost-detail").textContent = cost.detail;
     $("stat-requests").textContent = count(totals.requests);
     $("stat-users").textContent = count(summary.by_user.filter((row) => row.totals && row.totals.requests > 0).length);
     const conflicts = Array.isArray(summary.conflicts) ? summary.conflicts : [];
     const conflictCount = finite(summary.quality?.conflicted_events_excluded) ? summary.quality.conflicted_events_excluded : conflicts.length;
+    $("conflict-banner").hidden = !conflictCount;
     if (conflictCount) {
       $("conflict-banner").textContent = "发现 " + count(conflictCount) + " 条冲突记录，已隔离并排除于有效用量。费用为已定价记录的小计，完整估算暂不可得。";
       $("conflict-banner").hidden = false;
@@ -177,8 +208,9 @@
       const totals = user.totals || {};
       row.append(node("td", "numeric", count(devices.length)), node("td", "numeric", count(totals.requests)));
       const tokenCell = node("td", "numeric", compact(totals.total_tokens)); tokenCell.title = count(totals.total_tokens); row.append(tokenCell);
-      const costCell = node("td", "numeric" + (totals.estimated_cost_usd == null ? " cost-unpriced" : ""), amount(totals.estimated_cost_usd));
-      if (totals.estimated_cost_usd == null) costCell.append(node("span", "cost-subtotal", "小计 " + amount(totals.priced_cost_usd)));
+      const cost = costDisplay(totals);
+      const costCell = node("td", "numeric" + (cost.partial ? " cost-unpriced" : ""), cost.value);
+      if (cost.partial) costCell.append(node("span", "cost-subtotal", cost.label + " · " + cost.detail));
       row.append(costCell);
       const latest = [user.last_seen, user.last_sync, ...devices.map((device) => device.last_seen)].filter(Boolean).sort().pop();
       const sync = node("td", "", dateTime(latest)); if (latest) sync.title = String(latest); if (!user.submitted && latest) sync.append(node("span", "sync-history-label", "历史同步，非本期提交")); row.append(sync);
@@ -224,7 +256,8 @@
       const track = node("div", "model-track"), fill = node("div", "model-fill");
       fill.style.width = (total && finite(model.total_tokens) ? Math.max(0, Math.min(100, model.total_tokens / total * 100)) : 0) + "%";
       fill.style.backgroundColor = colors[index % colors.length]; track.append(fill);
-      item.append(row, track, node("p", "model-cost", model.estimated_cost_usd == null ? "未定价 · 已定价小计 " + amount(model.priced_cost_usd) : amount(model.estimated_cost_usd) + " API 等值"));
+      const cost = costDisplay(model);
+      item.append(row, track, node("p", "model-cost", cost.value + " · " + (cost.partial ? cost.label + " · " + cost.detail : "API 等值")));
       return item;
     }));
   }
@@ -237,6 +270,11 @@
       const badges = node("div", "batch-counts");
       badges.append(node("span", "batch-badge", "新增 " + count(batch.new)), node("span", "batch-badge duplicate", "重复 " + count(batch.duplicates)), node("span", "batch-badge conflict", "冲突 " + count(batch.conflicts)));
       if (batch.rejected > 0) badges.append(node("span", "batch-badge conflict", "拒绝 " + count(batch.rejected)));
+      if (batch.is_complete === false) {
+        badges.append(node("span", "batch-badge conflict", "日志不完整"));
+        const reasons = Array.isArray(batch.incomplete_reasons) ? [...new Set(batch.incomplete_reasons.map(incompleteReasonText))] : [];
+        identity.append(node("p", "batch-device", reasons.length ? reasons.join("；") : "部分日志或记录不可用"));
+      }
       item.append(identity, badges, node("time", "batch-time", dateTime(batch.received_at)));
       return item;
     }));
@@ -291,7 +329,7 @@
     finally { tokenRequestPending = false; $("close-email-dialog").disabled = false; $("disconnect-button").disabled = false; }
   });
   $("copy-token-button").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("upload-token").value); $("copy-token-button").textContent = "已复制"; } catch (_) { $("upload-token").focus(); $("upload-token").select(); $("copy-token-button").textContent = "请按 Ctrl/Cmd + C 复制"; } });
-  setPeriod("last7");
+  setPeriod("last-week");
   updateConnection(false);
   if (adminKey) loadData();
 })();

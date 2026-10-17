@@ -82,7 +82,8 @@ def query_period(params):
                 raise Invalid('week must be Monday midnight')
         else:
             current = datetime.now(BEIJING)
-            lo = current.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=current.weekday())
+            # The default report is the last completed Beijing natural week.
+            lo = current.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=current.weekday() + 7)
         hi = lo + timedelta(days=7)
     if lo >= hi or hi - lo > timedelta(days=3660):
         raise Invalid('invalid period')
@@ -312,7 +313,23 @@ class Store:
         latest = {}
         for row in batch_rows:
             latest.setdefault((row['email'], row['device_id'], row['period_start'], row['period_end']), row)
+        # A complete batch for one day cannot establish coverage for a whole week.
+        # Merge declared windows per reporting device; do not infer missing activity
+        # for known devices that submitted no batch in the selected interval.
+        windows = defaultdict(list)
+        for row in latest.values():
+            windows[(row['email'], row['device_id'])].append((max(lower, row['period_start']), min(upper, row['period_end'])))
+        partial_devices = set()
+        for device, intervals in windows.items():
+            covered_until = lower
+            for start, end in sorted(intervals):
+                if start > covered_until:
+                    break
+                covered_until = max(covered_until, end)
+            if covered_until < upper:
+                partial_devices.add(device)
         incomplete_emails = {r['email'] for r in latest.values() if not r['is_complete']}
+        incomplete_emails.update(email for email, _ in partial_devices)
         submitted_emails = {r['email'] for r in batch_rows}
         incomplete_emails.update(u['email'] for u in users if u['active'] and u['email'] not in submitted_emails)
         overall, by_user, by_day, by_model = UsageTotal(), defaultdict(UsageTotal), defaultdict(UsageTotal), defaultdict(UsageTotal)
@@ -324,11 +341,11 @@ class Store:
         incomplete = not batch_rows or bool(incomplete_emails or conflict_rows)
         user_rows = []
         for user in users:
-            ds = [{k: v for k, v in row.items() if k != 'email'} for row in devices if row['email'] == user['email']]
+            ds = [{**{k: v for k, v in row.items() if k != 'email'}, 'partial_window_coverage': (row['email'], row['device_id']) in partial_devices} for row in devices if row['email'] == user['email']]
             user_rows.append({'email': user['email'], 'active': bool(user['active']), 'totals': by_user[user['email']].output(user['email'] in incomplete_emails or user['email'] in affected_emails), 'devices': ds, 'last_seen': max((d['last_seen'] for d in ds), default=None), 'submitted': any(r['email'] == user['email'] for r in batch_rows), 'incomplete_batches': sum(not r['is_complete'] for r in latest.values() if r['email'] == user['email'])})
         conflicts = [{'event_id': r['event_id'], 'reason': '+'.join(n for n in ('ownership' if r['ownership'] else '', 'content' if r['content'] else '') if n) or 'quarantined', 'detected_at': r['detected_at'], 'last_detected_at': r['last_detected_at'], 'status': 'quarantined_excluded'} for r in conflict_rows[:100]]
         batches = [{'received_at': r['received_at'], 'email': r['email'], 'device_id': r['device_id'], 'received': r['received'], 'new': r['new_count'], 'duplicates': r['duplicates'], 'conflicts': r['conflicts'], 'rejected': r['rejected'], 'is_complete': bool(r['is_complete']), 'data_status': r['data_status'], 'incomplete_reasons': json.loads(r['incomplete_reasons'])} for r in batch_rows[:100]]
-        return {'period_start': lo.isoformat(), 'period_end': hi.isoformat(), 'timezone': 'Asia/Shanghai', 'identity_assurance': 'self_reported', 'totals': overall.output(incomplete), 'by_user': user_rows, 'by_day': [{'day': k, **v.output(incomplete)} for k, v in sorted(by_day.items())], 'by_model': [{'model': k, **v.output(incomplete)} for k, v in sorted(by_model.items())], 'conflicts': conflicts, 'batches': batches, 'quality': {'conflicted_events_excluded': len(conflict_rows), 'incomplete_device_periods': sum(not r['is_complete'] for r in latest.values()), 'missing_users': [u['email'] for u in user_rows if u['active'] and not u['submitted']], 'is_complete': not incomplete, 'account_coverage': 'available uploaded local events only; a submission does not prove full historical coverage'}, 'pricing': {'currency': prices.get('currency', 'USD'), 'basis': prices.get('basis', 'standard_api_equivalent'), 'verified_at': prices.get('verified_at'), 'source': prices.get('source'), 'sha256': token_hash(json.dumps(prices, sort_keys=True, ensure_ascii=True)), 'notes': ['Server recomputes configured API-equivalent costs; subscription billing and quota are separate.']}}
+        return {'period_start': lo.isoformat(), 'period_end': hi.isoformat(), 'timezone': 'Asia/Shanghai', 'identity_assurance': 'self_reported', 'totals': overall.output(incomplete), 'by_user': user_rows, 'by_day': [{'day': k, **v.output(incomplete)} for k, v in sorted(by_day.items())], 'by_model': [{'model': k, **v.output(incomplete)} for k, v in sorted(by_model.items())], 'conflicts': conflicts, 'batches': batches, 'quality': {'conflicted_events_excluded': len(conflict_rows), 'incomplete_device_periods': sum(not r['is_complete'] for r in latest.values()), 'partial_coverage_devices': len(partial_devices), 'missing_users': [u['email'] for u in user_rows if u['active'] and not u['submitted']], 'is_complete': not incomplete, 'account_coverage': 'available uploaded local events only; a submission does not prove full historical coverage'}, 'pricing': {'currency': prices.get('currency', 'USD'), 'basis': prices.get('basis', 'standard_api_equivalent'), 'verified_at': prices.get('verified_at'), 'source': prices.get('source'), 'sha256': token_hash(json.dumps(prices, sort_keys=True, ensure_ascii=True)), 'notes': ['Server recomputes configured API-equivalent costs; subscription billing and quota are separate.']}}
 
 def csv_safe(value):
     text = str(value)

@@ -25,7 +25,7 @@ def parse_time(value):
     return result.astimezone(BEIJING)
 
 
-def period_bounds(period="last7", now=None, start=None, end=None):
+def period_bounds(period="last-week", now=None, start=None, end=None):
     now = parse_time(now) if isinstance(now, str) else now or datetime.now(BEIJING)
     now = now.astimezone(BEIJING)
     if bool(start) != bool(end):
@@ -135,7 +135,7 @@ class Aggregate:
         return counts
 
 
-def collect(codex_home=None, period="last7", now=None, start=None, end=None, prices=None,
+def collect(codex_home=None, period="last-week", now=None, start=None, end=None, prices=None,
             include_events=False):
     """Return aggregates; opt in to (aggregates, safe event package) from one scan."""
     now, lo, hi = period_bounds(period, now, start, end)
@@ -364,7 +364,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     cmd = sub.add_parser("collect")
-    cmd.add_argument("--period", choices=("last7", "last-week"), default="last7")
+    cmd.add_argument("--period", choices=("last7", "last-week"), default="last-week", help="Default: previous natural week in Beijing; last7 is an explicit rolling seven-day window")
     cmd.add_argument("--codex-home")
     cmd.add_argument("--now")
     cmd.add_argument("--start")

@@ -9,7 +9,7 @@ from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request
 
-from client import NoRedirect, device_id, load_token, upload_url, safe_ack, resolve_remote, load_remote_config, upload_with_retries, upload, PinnedHTTPSConnection, PinnedHTTPSHandler, validate_connect_ip
+from client import NoRedirect, device_id, load_token, upload_url, safe_ack, resolve_remote, load_remote_config, upload_with_retries, perform_with_retries, upload, PinnedHTTPSConnection, PinnedHTTPSHandler, validate_connect_ip
 
 
 class ClientTests(unittest.TestCase):
@@ -135,6 +135,33 @@ class ClientTests(unittest.TestCase):
         for value in ("http://example.com", "file:///a", "https://user:password@example.com", "https://example.com/?token=x"):
             with self.assertRaises(ValueError):
                 upload_url(value)
+
+    def test_upload_allows_slow_connection_but_registration_keeps_short_limits(self):
+        package = {"kind": "codex_usage_events", "batch_id": "a" * 64}
+        with mock.patch("client.upload", return_value={"ok": True}) as send:
+            upload_with_retries("https://example.test", "private", package, "device")
+            self.assertEqual(send.call_args.args[4], 60)
+            upload_with_retries("https://example.test", "private", package, "device", timeout=120)
+            self.assertEqual(send.call_args.args[4], 120)
+        for invalid in (0, -1, 121, True, float("nan"), float("inf")):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                upload_with_retries("https://example.test", "private", package, "device", timeout=invalid)
+        with self.assertRaises(ValueError):
+            perform_with_retries(lambda seconds: None, timeout=16)
+        with mock.patch("client.time.monotonic", side_effect=[0, 0, 55, 55]), mock.patch("client.time.sleep") as sleep:
+            with self.assertRaisesRegex(TimeoutError, "deadline_exceeded"):
+                perform_with_retries(lambda seconds: (_ for _ in ()).throw(TimeoutError()))
+            sleep.assert_not_called()
+
+    def test_upload_deadline_is_bounded_and_retries_do_not_start_after_it(self):
+        package = {"kind": "codex_usage_events", "batch_id": "a" * 64}
+        with mock.patch("client.time.monotonic", side_effect=[0, 0, 370, 370]), mock.patch("client.time.sleep") as sleep, mock.patch("client.upload", side_effect=TimeoutError()) as send:
+            with self.assertRaisesRegex(TimeoutError, "deadline_exceeded"):
+                upload_with_retries("https://example.test", "private", package, "device", timeout=120)
+        self.assertEqual(send.call_count, 1)
+        self.assertIs(send.call_args.args[2], package)
+        self.assertEqual(send.call_args.args[4], 120)
+        sleep.assert_not_called()
 
     def test_device_id_is_persistent_and_token_is_separate(self):
         with tempfile.TemporaryDirectory() as folder:

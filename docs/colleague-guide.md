@@ -4,27 +4,37 @@
 
 新装且没有配置时默认使用 codex.wenspock.site。旧地址 https://usage.wenspock.site 保留相同接口与数据，已有配置继续使用原地址和凭据，更新 skill 不会静默迁移；旧地址直接处理上报，不依赖重定向。
 
-## 一句话交给 Codex 安装
+## 推荐：安装、立即上报并设置每周自动化
 
-在每台要统计的机器上，把下面的话复制给 Codex：
+每位同事在**每台需要统计的机器**上，将下面整段交给 Codex，无需本人拉仓库或运行命令：
 
-> 请用 skill-installer 安装 https://github.com/spock-wen/codex-usage-reporter/tree/main/skills/codex-usage ，安装后运行该 skill 的 scripts/enrollment.py，自动读取本机 Codex 邮箱接入 https://codex.wenspock.site 并保存凭证；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务；已有安装请安全更新并保留私人配置和原上报地址。
+> 请只下载安装 https://gitee.com/hihope-aifoundry/codex-usage-reporter/tree/main/skills/codex-usage 完整 skill 目录（含 agents 和 scripts，共 9 个文件），不要克隆或下载整个仓库；已有安装请备份后安全更新，保留私人配置、凭据、设备 ID 和原上报地址，不重复安装。运行实际安装目录的 scripts/enrollment.py 自动读取 Codex 邮箱并保存私有接入凭证，新装默认 https://codex.wenspock.site；安装成功后立即运行 scripts/report.py run --period last-week，保存本地报告并反馈起止时间、token 用量及新增、重复、冲突数量。再创建或复用更新本机同用途的 Codex 原生自动化，每周一上午 10:00（Asia/Shanghai）使用实际安装目录上报每次执行时的上周自然周用量（last-week），周任务添加 --max-upload-delay-seconds 600 做设备错峰；首次上报不等待。不重复创建任务，不复制其他机器的凭据；完成后告诉我首次回执和自动化设置结果。
 
-## 安装完成后，每周上报
+这段话同时授权首次上传及创建每周任务。先完成首次 last-week 上报，再用 Codex 原生自动化保存周一 10:00（Asia/Shanghai）的计划；同一机器已有同用途任务时更新复用，不另建一份。运行指令必须使用实际 Python 与 skill 脚本的绝对路径，并把报告存放在 skill 外；首次不加延迟参数，只有周任务加 --max-upload-delay-seconds 600。
 
-安装接入与上报是两步。安装成功后，在每台需要统计的机器上把下面这段话发给 Codex：
+### 周任务的执行条件与错峰
+
+任务在每周一 10:00 触发，各设备上传前随机等待 0–600 秒错峰；实际开始还受任务排队和采集耗时影响。电脑需开机且 Codex 桌面应用运行，并能访问本机日志与服务；CLI/IDE 环境不支持原生任务管理时，应明确提示改用桌面应用，不声称已经排程。[官方自动化说明](https://learn.chatgpt.com/docs/automations)
+
+离线不保证自动补报。恢复后先核对缺失周期；本周内重新执行 last-week 仍对应同一上周，跨周则改用固定起止日期或重传已保存事件包，不能把新的 last-week 当旧周补报。
+
+以一次本机上周样本估算：7,095 条请求的事件包约 2.13 MB，30 台同规模机器合计约 63.8 MB；仅按 5 Mbps 计算，纯传输约 102 秒，尚未计网络、HTTPS、服务处理与重试开销。按设备数量估算，30 人多机可能超过 30 台；这只是样本线性估算，未经 30 台并发压测，不是性能保证，因此周任务保留 0–10 分钟错峰。
+
+## 备选：每周手动上报
+
+不想创建自动化时，在每台机器完成安装后手动发送：
 
 > 使用 $codex-usage 采集并上报上周自然周的 Codex 用量到已配置的团队服务，保存本地报告，并告诉我起止时间、token 用量及新增、重复、冲突数量。
 
-建议每周一执行；本周其他日期执行也覆盖同一个上周。last-week 固定按北京时间：上周一 00:00 至本周一 00:00，不含结束时刻。例如 2026-10-19（周一）执行覆盖 2026-10-12 00:00 至 2026-10-19 00:00，此处仅为日期示例。不要用滚动七天的 last7 替代自然周周报。
+默认统计和上报上周自然周（last-week），建议每周一执行；本周其他日期执行也覆盖同一个上周。周期固定按北京时间：上周一 00:00 至本周一 00:00，不含结束时刻。例如 2026-10-19（周一）执行覆盖 2026-10-12 00:00 至 2026-10-19 00:00，此处仅为日期示例。只有明确要求“最近 7 天”或指定 last7 时才用滚动七天，不用它替代自然周周报；安装后的本地自测也使用 last-week。
 
-每台机器各自上报，同邮箱的独立请求累加，同一请求重复上传只计算一次。安装不会自行上报或定时运行；需要每周自动化时，由每位成员在本人机器另行明确配置。需要脚本命令时见[直接运行上报脚本](#可选直接运行上报脚本)。
+每台机器各自接入并上报，同邮箱的独立请求累加，同一请求重复上传只计算一次，不复制设备 ID 或凭据。需要脚本命令时见[直接运行上报脚本](#可选直接运行上报脚本)。
 
-## 可选：安装并立即上报上周
+## 备选：只安装，不上传或定时
 
-如果希望一次完成安装和首次上报，把下面整段转发给同事。**选择这段才同时授权上传**，前面的安装话术仍只接入：
+只想先安装检查时使用下面这段；它不会上传或创建自动化：
 
-> 请从 https://gitee.com/hihope-aifoundry/codex-usage-reporter 下载或克隆仓库到工作区，保留已有修改，执行仓库根的 python scripts/manage_skill.py install --enroll 安装并自动接入；新装默认 https://codex.wenspock.site，已有安装保留私人配置和原上报地址。然后使用实际安装的 codex-usage skill 立即采集并上报上周自然周用量（last-week），保存本地报告，反馈起止时间、token 用量及新增、重复、冲突数量；不创建定时任务。
+> 请用 skill-installer 安装 https://github.com/spock-wen/codex-usage-reporter/tree/main/skills/codex-usage ，安装后运行该 skill 的 scripts/enrollment.py，自动读取本机 Codex 邮箱接入 https://codex.wenspock.site 并保存凭证；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务；已有安装请安全更新并保留私人配置和原上报地址。
 
 ## 安装检查与备选方式
 
@@ -32,21 +42,41 @@
 
 API Key 登录、Codex 未登录或当前账户没有邮箱时，通过 Codex 正常流程登录已有账户后重试，不从系统用户名猜邮箱。安装接入只提交邮箱和本设备注册信息，不上传历史用量；本地自测的 --no-upload 也不联网。
 
-给执行安装的 Codex：先使用 skill-installer 的 GitHub URL 安装方式，仅安装上述自包含目录，记录实际目标目录，再用其中 scripts/enrollment.py 完成接入，运行 scripts/report.py run --period last7 --no-upload --output-dir <skill目录外的本地报告目录> 自测并报告结果。不直接读取 OpenAI 认证文件，不打印注册秘密或凭据，不自动登录或修改代理/hosts。不要假设仓库根目录或 manage_skill.py 已下载。若已有同名 skill，skill-installer 不会原位覆盖：先安装到临时目录，比较差异，将旧版备份到 skill 发现目录之外，再安全更新已存在的唯一安装目录；保留未知文件和所有私人状态，不通过删除整个目录解决冲突。新旧发现目录都有同名 skill 时先确认实际使用位置，避免产生第三份。
+给执行安装的 Codex：使用上面的 GitHub 只安装备选时，按 skill-installer 的 GitHub URL 方式安装自包含目录，记录实际目标目录，再用其中 scripts/enrollment.py 完成接入，运行 scripts/report.py run --period last-week --no-upload --output-dir <skill目录外的本地报告目录> 自测并报告结果；推荐的 Gitee 完整流程按下方匿名下载说明取文件，再首次上报并设置自动化。不直接读取 OpenAI 认证文件，不打印注册秘密或凭据，不自动登录或修改代理/hosts。不要假设仓库根目录或 manage_skill.py 已下载。若已有同名 skill，skill-installer 不会原位覆盖：先安装到临时目录，比较差异，将旧版备份到 skill 发现目录之外，再安全更新已存在的唯一安装目录；保留未知文件和所有私人状态，不通过删除整个目录解决冲突。新旧发现目录都有同名 skill 时先确认实际使用位置，避免产生第三份。
 
 安装后的 skill 在下一轮对话可用；如果仍未发现，再重启 Codex 检查实际安装位置。接入和自测可直接使用已记录的绝对脚本路径完成，不依赖当前对话立即发现新 skill。
 
 ### GitHub 访问不畅时使用 Gitee
 
-将下面的话交给 Codex，下载、安装和接入仍由它完成：
+以下是 Gitee 的**只安装备选**，不包含首次上传或周任务；完整流程请使用文首推荐话术：
 
-> 请从 https://gitee.com/hihope-aifoundry/codex-usage-reporter 下载或克隆仓库到工作区，保留已有本地修改，在仓库根执行 python scripts/manage_skill.py install --enroll，自动读取本机 Codex 邮箱并保存接入凭证；新装默认接入 https://codex.wenspock.site，已有安装请备份后安全更新原 skill 目录，保留私人配置、凭据、设备 ID 和原上报地址，不重复安装；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务，完成后做 --no-upload 本地自测。
+> 请只下载安装 https://gitee.com/hihope-aifoundry/codex-usage-reporter/tree/main/skills/codex-usage 这个完整 skill 目录（含 agents 和 scripts），不要克隆或下载整个仓库；已有安装请备份后安全更新，保留私人配置、凭据、设备 ID 和原上报地址，不重复安装。运行实际安装目录的 scripts/enrollment.py 自动读取 Codex 邮箱并保存接入凭证，新装默认 https://codex.wenspock.site；无需我手填邮箱或令牌，暂不上传历史数据、不创建定时任务，完成后做 --no-upload 本地自测。
 
-skill-installer 的 URL 安装方式仅支持 GitHub，不能直接传 Gitee URL；Gitee 路径使用仓库自带的 manage_skill.py。安装器在备份后逐文件原子替换，保留未知文件和私人状态；不要删除原安装目录或强制重置已有工作区。
+给执行安装的 Codex：skill-installer 的 URL 安装方式仅支持 GitHub，不能直接传 Gitee URL。Gitee 使用匿名 Contents API，仅取这个目录，不下载整仓归档，也不依赖仓库根的 manage_skill.py：
 
-## 可选：自行拉取仓库安装
+1. 请求 `https://gitee.com/api/v5/repos/hihope-aifoundry/codex-usage-reporter/branches/main`，先将 main 解析为返回的 `commit.sha`。
+2. 使用 `https://gitee.com/api/v5/repos/hihope-aifoundry/codex-usage-reporter/contents/skills/codex-usage?ref=<SHA>` 检查目录，后续所有文件均通过同一个 Contents API、同一个固定 SHA 获取，不再用浮动 main，防止混合版本。
+3. 只取以下 9 个相对路径，保留目录结构并确认文件齐全；失败时停止，不把网页 HTML 当脚本，也不回退下载整仓。
 
-如果希望手动维护源码，可以匿名克隆公开仓库：
+```text
+SKILL.md
+agents/openai.yaml
+scripts/collector.py
+scripts/identity.py
+scripts/client.py
+scripts/report.py
+scripts/configure.py
+scripts/enrollment.py
+scripts/prices.json
+```
+
+例如读取文件 `scripts/enrollment.py` 时，请求 `.../contents/skills/codex-usage/scripts/enrollment.py?ref=<SHA>`，按响应的 encoding 解码 content。全部文件在临时目录验证完成后再安装，记录实际 skill 目录；新装使用当前 Codex 的用户 skill 目录，已有安装更新原位置。将旧版备份到 skill 发现目录之外，逐文件原子替换受管理文件；保留未知文件以及所有私人配置、凭据、设备 ID、原上报地址，不删除整个原目录，不产生重复安装。若本地程序有修改，先保留差异，不覆盖丢失。
+
+安装后直接用实际目录的 scripts/enrollment.py 接入；需要本地自测则执行 scripts/report.py run --period last-week --no-upload，并把报告放在 skill 目录之外。只有明确选择推荐的安装、首次上报及每周自动化话术，或另行要求上报时，才执行 scripts/report.py run --period last-week --output-dir <本地报告目录>；这些操作都无需仓库根脚本。
+
+## 维护者/开发者可选：自行拉取仓库
+
+**普通同事无需这一步**；仅希望维护源码或开发的人可以匿名克隆公开仓库：
 
 ```sh
 git clone https://github.com/spock-wen/codex-usage-reporter.git
@@ -74,14 +104,14 @@ PowerShell：
 
 ```powershell
 $SkillDir = '安装器JSON中destination的完整目录'
-python (Join-Path $SkillDir 'scripts/report.py') run --period last7 --no-upload --output-dir './reports/local-check'
+python (Join-Path $SkillDir 'scripts/report.py') run --period last-week --no-upload --output-dir './reports/local-check'
 ```
 
 Linux/macOS：
 
 ```sh
 SKILL_DIR='/替换为安装器返回的完整skill目录'
-python "$SKILL_DIR/scripts/report.py" run --period last7 --no-upload --output-dir ./reports/local-check
+python "$SKILL_DIR/scripts/report.py" run --period last-week --no-upload --output-dir ./reports/local-check
 ```
 
 已安装 skill 但尚未接入时，首次明确要求上报会自动完成接入；纯本地 --no-upload 不联网，也不会查询登录身份。
@@ -90,7 +120,7 @@ python "$SKILL_DIR/scripts/report.py" run --period last7 --no-upload --output-di
 
 ## 可选：直接运行上报脚本
 
-使用安装器返回的实际 skill 目录，也可直接执行：
+使用 Codex 安装后记录的实际 skill 目录，也可直接执行：
 
 ```sh
 python "$SKILL_DIR/scripts/report.py" run --period last-week --output-dir ./reports/weekly
@@ -125,9 +155,9 @@ python "$SKILL_DIR/scripts/client.py" --events ./reports/backfill-events.json
 
 ## 更新与私人状态
 
-普通成员将前面的“一句话”再次发送给 Codex，并说明更新现有 skill 即可；不需要自行维护仓库。更新只替换 skill 程序，保留原设备和私人配置，不会因此自动上传。
+普通成员将前面的“只安装”话术再次发送给 Codex，并说明更新现有 skill 即可；仍只下载 skill 目录，不需要维护仓库。更新前将旧版备份到 skill 发现目录之外，只替换受管理程序文件，保留未知文件、原设备、私人配置、凭据和原上报地址，不会因此自动上传。不要选择推荐的完整接入话术来做仅更新操作；仅更新不会创建或更改已有自动化。
 
-选择自行维护源码的成员，在原仓库目录执行：
+维护者/开发者选择自行维护源码时，在原仓库目录执行：
 
 ```sh
 git pull --ff-only

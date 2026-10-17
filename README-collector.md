@@ -3,14 +3,14 @@
 Python 3.10+，仅使用标准库。只读取 `$CODEX_HOME/sessions/**/*.jsonl` 与 `archived_sessions/**/*.jsonl`，默认 `~/.codex`。不读取 `auth.json`，不修改日志，不输出聊天内容、账号、原始 response ID 或源日志路径。不连接服务器。
 
 ```powershell
-python collector.py collect --period last7 --output reports/last7.json
+python collector.py collect --output reports/last-week.json
 python collector.py collect --period last-week --output reports/last-week.json
 python collector.py collect --period last7 --now 2026-10-16T17:38:34+08:00 --output reports/fixed.json
 python collector.py collect --period last-week --output reports/last-week.json --events-output reports/last-week-events.json
 python -m unittest test_collector -v
 ```
 
-`last7` 是截至 `--now` 的连续 7 天；`last-week` 是北京时间上周一 00:00 至本周一 00:00。起点包含，终点不包含。筛选的是 `token_usage_record.timestamp`（响应记录时间）。`--start` / `--end` 可同时覆盖周期，必须包含时区；`--codex-home` 指定单个日志根目录；`--prices` 指定价格文件；`--output -` 输出 JSON 到标准输出。
+未指定 `--period` 时默认 `last-week`，即北京时间上周一 00:00 至本周一 00:00；“最近一周”也按此自然周处理。明确需要最近七天或滚动七天时才用 `--period last7`，为截至 `--now` 的连续 7 天。起点包含，终点不包含。筛选的是 `token_usage_record.timestamp`（响应记录时间）。`--start` / `--end` 可同时覆盖周期，必须包含时区；`--codex-home` 指定单个日志根目录；`--prices` 指定价格文件；`--output -` 输出 JSON 到标准输出。
 
 ## 严格计数与去重
 

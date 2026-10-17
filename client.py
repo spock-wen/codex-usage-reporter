@@ -193,7 +193,7 @@ def safe_ack(ack):
     return result
 
 
-def upload(base, token, package, device, timeout=30, connect_ip=None):
+def upload(base, token, package, device, timeout=60, connect_ip=None):
     endpoint = upload_url(base)
     pin = validate_connect_ip(connect_ip)
     if pin and urlsplit(endpoint).scheme != "https":
@@ -222,23 +222,27 @@ def upload(base, token, package, device, timeout=30, connect_ip=None):
     return ack
 
 
-def upload_with_retries(base, token, package, device, timeout=15, max_attempts=3, connect_ip=None):
-    """Retry the identical in-memory batch, with a hard 55-second caller deadline.
+def upload_with_retries(base, token, package, device, timeout=60, max_attempts=3, connect_ip=None):
+    """Retry the identical batch, with up to 120 seconds per attempt and 370 total.
 
     Each network worker also has a socket timeout. Daemon workers prevent DNS or
     platform network stalls from keeping the CLI alive after its bounded result.
     """
     return perform_with_retries(lambda seconds: upload(base, token, package, device, seconds, connect_ip=connect_ip),
-                                timeout=timeout, max_attempts=max_attempts)
+                                timeout=timeout, max_attempts=max_attempts, timeout_limit=120, deadline_seconds=370)
 
 
-def perform_with_retries(operation, timeout=15, max_attempts=3):
-    """Bound one fixed-payload network operation; never recollect or change identity."""
+def perform_with_retries(operation, timeout=15, max_attempts=3, *, timeout_limit=15, deadline_seconds=55):
+    """Bound one fixed-payload operation; registration keeps its 15/55-second limits."""
     if type(max_attempts) is not int or not 1 <= max_attempts <= 3:
         raise ValueError("invalid_retry_count")
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 15:
-        raise ValueError("timeout_must_be_0_to_15")
-    deadline = time.monotonic() + 55
+    if type(timeout_limit) is not int or not 0 < timeout_limit <= 120:
+        raise ValueError("invalid_timeout_limit")
+    if isinstance(deadline_seconds, bool) or not isinstance(deadline_seconds, (int, float)) or not 0 < deadline_seconds <= 370:
+        raise ValueError("invalid_deadline")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= timeout_limit:
+        raise ValueError("timeout_outside_allowed_limit")
+    deadline = time.monotonic() + deadline_seconds
     last_error = None
     for attempt in range(1, max_attempts + 1):
         remaining = deadline - time.monotonic()
@@ -279,11 +283,11 @@ def main(argv=None):
     parser.add_argument("--token-file", help="Upload token text or JSON {upload_token: ...}; never an OpenAI token")
     parser.add_argument("--device-id")
     parser.add_argument("--state-dir")
-    parser.add_argument("--timeout", type=float, default=15, help="Per-attempt timeout, maximum 15 seconds")
+    parser.add_argument("--timeout", type=float, default=60, help="Upload per-attempt timeout; default 60 seconds, maximum 120 seconds")
     args = parser.parse_args(argv)
     try:
-        if not 0 < args.timeout <= 15:
-            raise ValueError("timeout must be 0..15 seconds")
+        if not 0 < args.timeout <= 120:
+            raise ValueError("timeout must be 0..120 seconds")
         path = Path(args.events)
         if path.stat().st_size > MAX_PACKAGE_BYTES:
             raise ValueError("input package exceeds 16 MiB")

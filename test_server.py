@@ -1,17 +1,18 @@
 """Synthetic backend invariants; never reads real Codex authentication or logs."""
 from concurrent.futures import ThreadPoolExecutor
 import copy
-from datetime import timedelta
+from datetime import datetime, timedelta
 import hashlib
 import json
 from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from collector import TOKEN_FIELDS, parse_time
+from collector import BEIJING, TOKEN_FIELDS, parse_time
 from server import AlreadyExists, EnrollmentConflict, Invalid, Store, canonical_json, csv_safe, export_csv, make_server, query_period, validate_package
 
 ADMIN = 'synthetic-admin-key-at-least-24-characters'
@@ -32,6 +33,35 @@ def package(events, start=START, end=END, complete=True):
             'is_complete': complete, 'data_status': 'observed_local_usage' if complete else 'incomplete',
             'incomplete_reasons': [] if complete else ['source_starts_after_period'], 'quality': {},
             'coverage_warnings': ['Local observed subset'], 'metadata': {'account_binding': 'unknown'}}
+
+
+class QueryPeriodTests(unittest.TestCase):
+    def test_default_last_completed_beijing_week_across_weekdays_and_utc_boundary(self):
+        cases = (
+            ('2026-10-12T00:01:00+08:00', '2026-10-05T00:00:00+08:00', '2026-10-12T00:00:00+08:00'),
+            ('2026-10-13T12:00:00+08:00', '2026-10-05T00:00:00+08:00', '2026-10-12T00:00:00+08:00'),
+            ('2026-10-18T23:59:59+08:00', '2026-10-05T00:00:00+08:00', '2026-10-12T00:00:00+08:00'),
+            ('2026-10-11T16:00:00Z', '2026-10-05T00:00:00+08:00', '2026-10-12T00:00:00+08:00'),
+            ('2026-10-11T15:59:59Z', '2026-09-28T00:00:00+08:00', '2026-10-05T00:00:00+08:00'),
+        )
+        for current, start, end in cases:
+            with self.subTest(current=current), patch('server.datetime', wraps=datetime) as clock:
+                clock.now.return_value = parse_time(current).astimezone(BEIJING)
+                lo, hi = query_period({})
+                self.assertEqual((lo.isoformat(), hi.isoformat()), (start, end))
+                self.assertEqual(hi - lo, timedelta(days=7))
+                clock.now.assert_called_once_with(BEIJING)
+
+    def test_explicit_week_and_range_keep_requested_dates(self):
+        with patch('server.datetime', wraps=datetime) as clock:
+            lo, hi = query_period({'week': ['2026-10-12']})
+            self.assertEqual((lo.isoformat(), hi.isoformat()), (START, END))
+            lo, hi = query_period({'start': ['2026-10-13'], 'end': ['2026-10-15']})
+            self.assertEqual((lo.isoformat(), hi.isoformat()),
+                             ('2026-10-13T00:00:00+08:00', '2026-10-15T00:00:00+08:00'))
+            clock.now.assert_not_called()
+        with self.assertRaises(Invalid):
+            query_period({'week': ['2026-10-13']})
 
 
 class ServerStoreTests(unittest.TestCase):
@@ -263,6 +293,44 @@ class ServerStoreTests(unittest.TestCase):
         lo, hi = query_period({'start': ['2026-10-12'], 'end': ['2026-10-19']})
         self.assertEqual(lo.isoformat(), START)
         self.assertEqual(hi - lo, timedelta(days=7))
+
+    def test_one_day_batch_is_partial_for_week_but_events_still_count(self):
+        self.ingest([event('one-day')], start=START, end='2026-10-13T00:00:00+08:00')
+        result = self.summary()
+        self.assertEqual(result['totals']['requests'], 1)
+        self.assertFalse(result['totals']['is_complete'])
+        self.assertFalse(result['quality']['is_complete'])
+        self.assertEqual(result['quality']['partial_coverage_devices'], 1)
+        self.assertTrue(result['by_user'][0]['devices'][0]['partial_window_coverage'])
+        self.assertEqual(result['quality']['incomplete_device_periods'], 0)
+
+    def test_adjacent_batch_windows_merge_to_cover_whole_week(self):
+        middle = '2026-10-15T00:00:00+08:00'
+        self.ingest([event('first-half')], start=START, end=middle)
+        self.ingest([event('second-half', middle)], start=middle, end=END)
+        result = self.summary()
+        self.assertEqual(result['totals']['requests'], 2)
+        self.assertTrue(result['quality']['is_complete'])
+        self.assertEqual(result['quality']['partial_coverage_devices'], 0)
+        # Full declared coverage must never erase a source-log quality failure.
+        self.ingest([event('second-half', middle)], start=middle, end=END, complete=False)
+        self.assertFalse(self.summary()['quality']['is_complete'])
+        self.assertEqual(self.summary()['quality']['incomplete_device_periods'], 1)
+
+    def test_gap_between_batch_windows_leaves_partial_coverage(self):
+        self.ingest([event('before-gap')], start=START, end='2026-10-14T00:00:00+08:00')
+        self.ingest([event('after-gap', '2026-10-15T00:00:00+08:00')], start='2026-10-15T00:00:00+08:00', end=END)
+        result = self.summary()
+        self.assertEqual(result['totals']['requests'], 2)
+        self.assertFalse(result['quality']['is_complete'])
+        self.assertEqual(result['quality']['partial_coverage_devices'], 1)
+
+    def test_query_subwindow_fully_covered_by_batch_is_not_partial(self):
+        self.ingest([event('wide-batch')], start=START, end='2026-10-15T00:00:00+08:00')
+        result = self.store.summary(parse_time(START), parse_time('2026-10-13T00:00:00+08:00'))
+        self.assertTrue(result['quality']['is_complete'])
+        self.assertEqual(result['quality']['partial_coverage_devices'], 0)
+        self.assertFalse(result['by_user'][0]['devices'][0]['partial_window_coverage'])
 
     def test_unknown_model_and_incomplete_sources_not_free(self):
         self.ingest([event('priced'), event('unpriced', model='unknown')])

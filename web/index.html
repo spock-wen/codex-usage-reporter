@@ -28,8 +28,8 @@
 
     <main>
       <section class="toolbar" aria-label="统计筛选">
-        <div class="period-block"><p class="field-caption">统计区间</p><div class="date-range"><label class="sr-only" for="start-date">开始日期（含）</label><input id="start-date" type="date" required><span class="range-arrow" aria-hidden="true">→</span><label class="sr-only" for="end-date">结束日期（不含）</label><input id="end-date" type="date" required></div><p class="field-help">北京时间 · 结束日期不包含在内</p></div>
-        <div class="quick-periods" role="group" aria-label="快捷区间"><button class="chip active" type="button" data-period="last7">近 7 天</button><button class="chip" type="button" data-period="this-week">本周</button><button class="chip" type="button" data-period="last-week">上周</button></div>
+        <div class="period-block"><p class="field-caption">统计区间</p><div class="date-range"><label class="sr-only" for="start-date">开始日期（含）</label><input id="start-date" type="date" required><span class="range-arrow" aria-hidden="true">→</span><label class="sr-only" for="end-date">结束日期（不含）</label><input id="end-date" type="date" required></div><p class="field-help">北京时间 · 自然日筛选 · 结束日期不包含在内</p></div>
+        <div class="quick-periods" role="group" aria-label="快捷区间"><button class="chip" type="button" data-period="last7">近 7 个自然日</button><button class="chip" type="button" data-period="this-week">本周</button><button class="chip active" type="button" data-period="last-week">上周自然周</button></div>
         <div class="email-filter"><label class="field-caption" for="email-filter">邮箱筛选</label><input id="email-filter" type="search" placeholder="全部邮箱" autocomplete="off" list="email-options"><datalist id="email-options"></datalist></div>
         <div class="toolbar-actions"><button class="button secondary" type="button" id="refresh-button"><span aria-hidden="true">↻</span> 刷新</button><button class="button secondary" type="button" id="export-button" disabled><span aria-hidden="true">↓</span> 导出 CSV</button></div>
       </section>
@@ -39,7 +39,7 @@
 
       <section class="stats-grid" aria-label="用量概览">
         <article class="stat-card"><p class="stat-label">总 Token <span class="stat-icon" aria-hidden="true">⌁</span></p><p class="stat-value" id="stat-tokens">—</p><p class="stat-detail" id="stat-tokens-detail">输入与输出合计</p></article>
-        <article class="stat-card cost-card"><p class="stat-label">API 等值费用 <span class="currency-tag">USD</span></p><p class="stat-value" id="stat-cost">—</p><p class="stat-detail" id="stat-cost-detail">按价格快照估算，非订阅账单</p></article>
+        <article class="stat-card cost-card"><p class="stat-label"><span id="stat-cost-label">API 等值费用</span> <span class="currency-tag">USD</span></p><p class="stat-value" id="stat-cost">—</p><p class="stat-detail" id="stat-cost-detail">按价格快照估算，非订阅账单</p></article>
         <article class="stat-card"><p class="stat-label">有效请求 <span class="stat-icon" aria-hidden="true">↗</span></p><p class="stat-value" id="stat-requests">—</p><p class="stat-detail">全局去重后的响应数量</p></article>
         <article class="stat-card"><p class="stat-label">活跃邮箱 <span class="stat-icon" aria-hidden="true">◎</span></p><p class="stat-value" id="stat-users">—</p><p class="stat-detail">区间内有有效使用记录</p></article>
       </section>

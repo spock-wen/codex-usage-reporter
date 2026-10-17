@@ -61,6 +61,10 @@ Nginx 请求体上限 17 MiB，后端实际限制 16 MiB/每批 50000 事件；�
 
 代码回退使用备份中的 `previous-release.txt`，人工核实其位于 `/opt/codex-usage/releases/` 后，将 `current` 原子切回旧版本再 `systemctl restart codex-usage`。如果需要回退本站 Nginx/unit，先从对应备份恢复原文件，运行 `systemd-analyze verify` / `nginx -t`，成功后再 daemon-reload、重启或 reload。数据库回滚可能丢失更新期间已接收的事件，需单独决策；普通代码回退不要覆盖现有数据库。
 
+## 默认统计区间
+
+服务端未指定 week/start/end 时与看板首次打开均默认上周自然周：北京时间上周一 00:00 至本周一 00:00（不含）。显式日期或 week 参数保持原行为。看板“近 7 个自然日”包含今天、按北京时间午夜切分，与采集程序显式 last7 的滚动 7×24 小时不同。
+
 ## 部署验收
 
 操作者应在主机上实际完成 `systemd-analyze verify`、`nginx -t`、服务 active/enabled、loopback 监听以及外部 HTTPS 证书验证。分别验证新旧域名 `/health` 为 200、HTTPS 无重定向且证书匹配，匿名访问 `/api/summary` 返回 401、上传 token 不能读取团队统计；管理员通过本地受控方式取得私有配置中的 key，不粘贴到共享日志。

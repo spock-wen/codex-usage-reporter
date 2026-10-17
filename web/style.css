@@ -3,3 +3,5 @@
 .submission-badge{display:block;width:max-content;margin:6px 0 0 35px;padding:2px 6px;border-radius:4px;font-size:9px;line-height:1.5}.submission-badge.submitted{background:#f1f5f2;color:#7c9585}.submission-badge.missing{background:#fff4e7;color:#ac8752}.sync-history-label{display:block;color:#a0a8af;font-size:9px;margin-top:4px}.icon-button:disabled{cursor:wait;opacity:.4}
 
 .enrollment-panel{margin-bottom:20px}.enrollment-panel .panel-heading{padding-bottom:12px}.enrollment-panel .panel-footnote{line-height:1.8;padding-top:0;padding-bottom:14px}
+
+.notice.warning{background:#fff4df;color:#8c662c;border:1px solid #f2deb6;padding:10px 13px;border-radius:8px}

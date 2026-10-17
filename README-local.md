@@ -17,9 +17,9 @@ python enrollment.py --url http://127.0.0.1:8765
 python report.py run --period last-week --output-dir reports/local-weekly
 ```
 
-需要纯本地统计用 `python report.py run --period last7 --no-upload --output-dir reports/local`，不联网、不查询登录身份。last-week 为北京时间上个自然周；历史补报可用 collector 的 --start/--end。远端同事安装见 [指南](docs/colleague-guide.md)。
+需要纯本地统计用 `python report.py run --period last-week --no-upload --output-dir reports/local`，不联网、不查询登录身份。不指定周期时也默认 last-week，为北京时间上个自然周；只有明确需要最近七个滚动日时才用 --period last7；历史补报可用 collector 的 --start/--end。远端同事安装见 [指南](docs/colleague-guide.md)。
 
-以下仅为旧版手动接入兼容：管理员在网页“手动兼容接入”登记邮箱并取得个人令牌，再用 `collector.py collect --period last7 --output reports/summary.json --events-output reports/events.json` 生成本地包。
+以下仅为旧版手动接入兼容：管理员在网页“手动兼容接入”登记邮箱并取得个人令牌，再用 `collector.py collect --period last-week --output reports/summary.json --events-output reports/events.json` 生成本地包。
 
 将网页生成的上报令牌存入本地文件，例如 `.local/upload-token.json`，内容为 `{"upload_token":"此处替换为专属令牌"}`。然后执行：
 
@@ -28,6 +28,8 @@ python client.py --url http://127.0.0.1:8765 --events reports/events.json --toke
 ```
 
 客户端为本机生成并复用 device ID；亦可用 `--device-id` 指定。失败可重传原包，服务器按请求标识去重。客户端不跟随重定向，不向远端明文 HTTP 发送令牌。上述 `python` 需要替换成可运行的解释器，不能使用 Windows Store 占位程序。
+
+用户明确授权每周自动上报时，用 Codex 原生自动化每周一北京时间 10:00 运行 `report.py run --period last-week --max-upload-delay-seconds 600`。同用途任务复用不重复创建；首次立即上报或普通手动上报不加错峰参数。该参数为 0–600 的整数，默认 0；程序先保存固定报告和事件包，再在真正上传前随机延迟，不更换批次。`--no-upload` 不延迟。上传默认每次 60 秒，重传包可用 `client.py --timeout 120` 放宽，最多三次、总调用限时 370 秒；注册仍为每次 15 秒、总 55 秒。不使用此参数或更新程序本身不会自动创建计划任务。
 
 ## 去重与冲突
 
